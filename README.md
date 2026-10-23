@@ -1,15 +1,16 @@
 # cws — 多会话 WebSocket 桥（Node.js）
 
-把**本地 claude / codex CLI** 与**远程 OpenClaw 网关**统一成多会话 WebSocket 服务：
+把**本地 claude / codex / codebuddy CLI** 与**远程 OpenClaw 网关**统一成多会话 WebSocket 服务：
 QQ 机器人、WebUI、任意客户端都能在线创建/接管会话、流式对话、审批权限、切换模型。
 协议 v0.2（与 Python 版 cc-bridge 完全兼容），内置 WebUI。
 
-## 三后端架构（一站式遥控台）
+## 四后端架构（一站式遥控台）
 
 | 后端 | 对象 | 方式 |
 |---|---|---|
 | `claude` | 本地 Claude Code CLI | spawn `claude -p` stream-json |
 | `codex` | 本地 Codex CLI | spawn `codex exec --json`（JSONL） |
+| `codebuddy` | 本地 CodeBuddy Code CLI（腾讯） | spawn `codebuddy -p` stream-json |
 | `openclaw` | **远程 OpenClaw 网关** | 官方 @openclaw/gateway-client（Gateway WS 协议 v4） |
 
 上游渠道（channels.json）只是 claude/codex 各自连的模型端点（glm/kimi/任意
@@ -26,8 +27,10 @@ node src/server.js
 # 浏览器打开 http://<host>:8642/  → 输入 token 即可在线使用
 ```
 
-claude 后端需要 `claude` CLI 已登录；codex 后端需要 `codex` CLI；openclaw 后端
-需要在 config.json 里 `gateways.openclaw` 配好远程网关（url+token）。
+claude 后端需要 `claude` CLI 已登录；codex 后端需要 `codex` CLI；codebuddy 后端
+需要 `codebuddy` CLI（`npm install -g @tencent-ai/codebuddy-code`，登录或配
+`CODEBUDDY_API_KEY`）；openclaw 后端需要在 config.json 里 `gateways.openclaw`
+配好远程网关（url+token）。
 
 ## 配置文件（三层拆分，开源友好）
 
@@ -75,6 +78,25 @@ final）→ cws delta/final；远程执行审批 → `session.approval` 事件 �
 - **codex ≥0.135 只支持 wire_api=responses**（chat 已移除），适配器默认 responses。
 - 权限等级 = sandbox 级别：read-only / workspace-write / danger-full-access / full-auto。
 
+## CodeBuddy 后端适配要点
+
+- `npm install -g @tencent-ai/codebuddy-code` 后二进制为 `codebuddy`（别名 cbc），
+  路径可在 config.json `codebuddy_bin` / WebUI「后端与网关」改。
+- 常驻进程 `codebuddy -p --input-format stream-json --output-format stream-json
+  --include-partial-messages --verbose --permission-mode <档> --allowedTools <白名单>`；
+  事件 schema 与 claude stream-json 同构（system/init、stream_event、assistant、result）。
+- 首启用 `--session-id <uuid>` 固定会话身份；复活用 `--resume <id> --resume-create-missing`
+  （transcript 被清理时同 id 重开，续轮不失败）。
+- **headless 无权限询问通道**（`--permission-prompt-tool stdio` 不支持）：default 档下
+  非白名单工具由 CLI 直接拒绝，无 claude 的 ask 卡片；全放行选 bypassPermissions
+  （自动追加 `-y`，并注入 `CODEBUDDY_IS_SANDBOX=1` 沙箱全放行）。
+  权限/渠道切换 = 重启进程换参（支持运行中改，下一轮边界生效）。
+- 渠道协议须为 **openai**（SDK 在 base_url 后拼 `/chat/completions`，Bearer 鉴权）：
+  base_url→`CODEBUDDY_BASE_URL`、api_key→`CODEBUDDY_API_KEY`、
+  http_headers→`CODEBUDDY_CUSTOM_HEADERS`（`{session_id}` 占位符可用）。
+- 权限档与 claude 同名：default / acceptEdits / plan / bypassPermissions。
+- 发图支持（user 消息 image content 块，协议与 claude 同构；真 CLI 待实弹复测）。
+
 ## WebUI
 
 - **登录**：token（支持一次性 token 消费、`?token=` 直达、`?sid=` 直达会话）。
@@ -98,7 +120,7 @@ turn_aborted / session_closed / history / sessions / sync_done / pong / error /
 channels / channels_saved / channels_deleted / channels_default / channel_test /
 channel_models / permission_ack / model_ack`。
 
-扩展字段：new_session 参数加 `backend: "claude"|"codex"|"openclaw"` 与
+扩展字段：new_session 参数加 `backend: "claude"|"codex"|"codebuddy"|"openclaw"` 与
 `gateway`/`remote_key`/`agent`；session_ready / sessions.list 带 `backend`。旧客户端零改动。
 
 ## 部署（systemd）
@@ -111,11 +133,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now cws
 
 ## 开发与验收
 
-- `node wsclient.mjs --url ws://127.0.0.1:8642/ws --scenario all` — 9 场景验收客户端
-  （claude 基本/并行/权限拒绝/提问/中断续聊/杂项 + codex 基本/中断 + openclaw 基本）。
+- `node wsclient.mjs --url ws://127.0.0.1:8642/ws --scenario all` — 10 场景验收客户端
+  （claude 基本/并行/权限拒绝/提问/中断续聊/杂项 + codex 基本/中断 + openclaw 基本
+  + codebuddy 基本）。
 - `scripts/mock-claude.mjs` / `scripts/mock-codex.mjs` / `scripts/mock-openclaw-gateway.mjs`
-  — 免 key 的全协议 mock，离线跑通三后端全链路。
-- 实弹切换：claude_bin/codex_bin 指向真实 CLI，gateways.openclaw 指向真实网关。
+  / `scripts/mock-codebuddy.mjs` — 免 key 的全协议 mock，离线跑通四后端全链路。
+- 实弹切换：claude_bin/codex_bin/codebuddy_bin 指向真实 CLI，gateways.openclaw 指向真实网关。
 
 ## 安全
 

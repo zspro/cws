@@ -62,7 +62,8 @@ export const ONE_TIME_TOKENS = new Set(cfg.one_time_tokens || []);
 export const PORT = Number(cfg.port || 8642);
 export let CLAUDE_BIN = cfg.claude_bin || '/usr/local/bin/claude';
 export let CODEX_BIN = cfg.codex_bin || 'codex';
-export let DEFAULT_BACKEND = ['openclaw', 'codex', 'claude'].includes(cfg.default_backend) ? cfg.default_backend : 'claude';
+export let CODEBUDDY_BIN = cfg.codebuddy_bin || 'codebuddy';
+export let DEFAULT_BACKEND = ['openclaw', 'codex', 'codebuddy', 'claude'].includes(cfg.default_backend) ? cfg.default_backend : 'claude';
 export const MAX_ACTIVE = Number(cfg.max_active_sessions ?? 3);
 export const QUEUE_MAX = Number(cfg.queue_max ?? 5);
 export const TURN_TIMEOUT = Number(cfg.turn_timeout ?? 300);
@@ -119,18 +120,20 @@ export function gatewayByName(name) {
 // setter（ESM import 绑定只读，跨模块修改经这些函数）
 export function setClaudeBin(v) { CLAUDE_BIN = v; }
 export function setCodexBin(v) { CODEX_BIN = v; }
-export function setDefaultBackend(v) { if (['openclaw', 'codex', 'claude'].includes(v)) DEFAULT_BACKEND = v; }
+export function setCodebuddyBin(v) { CODEBUDDY_BIN = v; }
+export function setDefaultBackend(v) { if (['openclaw', 'codex', 'codebuddy', 'claude'].includes(v)) DEFAULT_BACKEND = v; }
 export function setGateways(next) {
   for (const k of Object.keys(GATEWAYS)) delete GATEWAYS[k];
   Object.assign(GATEWAYS, next);
 }
 
-/** 持久化后端配置（claude/codex 路径 + 默认后端 + 网关）到 config.json/secrets.json。 */
+/** 持久化后端配置（claude/codex/codebuddy 路径 + 默认后端 + 网关）到 config.json/secrets.json。 */
 export function persistBackends() {
   try {
     const cfgFile = loadJsonFile(CONFIG_PATH, {});
     cfgFile.claude_bin = CLAUDE_BIN;
     cfgFile.codex_bin = CODEX_BIN;
+    cfgFile.codebuddy_bin = CODEBUDDY_BIN;
     cfgFile.default_backend = DEFAULT_BACKEND;
     const gOut = {};
     const tokens = {};

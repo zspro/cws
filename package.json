@@ -1,7 +1,7 @@
 {
   "name": "cws-bridge",
   "version": "2.0.0",
-  "description": "cws: multi-session WebSocket bridge over Claude Code / Codex CLI with WebUI (Node.js rewrite of cc-bridge)",
+  "description": "cws: multi-session WebSocket bridge over Claude Code / Codex / CodeBuddy CLI with WebUI (Node.js rewrite of cc-bridge)",
   "type": "module",
   "private": true,
   "main": "src/server.js",

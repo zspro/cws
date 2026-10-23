@@ -12,10 +12,11 @@ import type {
 export const PERM_OPTIONS: Record<Backend, [string, string][]> = {
   claude: [["default", "默认 · 按需询问"], ["acceptEdits", "接受编辑"], ["bypassPermissions", "完全允许"], ["plan", "只读规划"]],
   codex: [["read-only", "只读"], ["workspace-write", "工作区可写"], ["full-auto", "绕过审批与沙箱"], ["danger-full-access", "完全访问"]],
+  codebuddy: [["default", "默认 · 按需询问"], ["acceptEdits", "接受编辑"], ["bypassPermissions", "完全允许"], ["plan", "只读规划"]],
   openclaw: [["read-only", "只读"], ["guarded", "守护"], ["workspace", "工作区"], ["full", "完全"]],
 };
 
-export const BACKEND_LETTER: Record<Backend, string> = { claude: "C", codex: "X", openclaw: "O" };
+export const BACKEND_LETTER: Record<Backend, string> = { claude: "C", codex: "X", codebuddy: "B", openclaw: "O" };
 
 function emptyInfo(sid: string): SessionInfo {
   return {
@@ -103,7 +104,7 @@ class Store {
     return this.state.channels.filter((c) => {
       const p = c.protocol || "auto";
       if (p === "auto") return true;
-      if (backend === "codex") return p !== "anthropic";
+      if (backend === "codex" || backend === "codebuddy") return p !== "anthropic";
       if (backend === "claude") return p !== "openai";
       return false;
     });
@@ -219,8 +220,8 @@ class Store {
     const sid = this.state.current;
     if (!sid || !text.trim()) return false;
     const s = this.sess(sid);
-    if (images && images.length && s.info.backend !== "claude") {
-      this.toast("仅 claude 后端支持发送图片", "err");
+    if (images && images.length && !["claude", "codebuddy"].includes(s.info.backend)) {
+      this.toast("仅 claude / codebuddy 后端支持发送图片", "err");
       return false;
     }
     this.send("send", {
@@ -413,6 +414,7 @@ class Store {
         this.state.backends = {
           claude_bin: f.claude_bin || "",
           codex_bin: f.codex_bin || "",
+          codebuddy_bin: f.codebuddy_bin || "",
           default_backend: (f.default_backend || "claude") as Backend,
           gateways: (f.gateways || []).map((g: Frame) => ({
             name: g.name, url: g.url, agent: g.agent, token_tail: g.token_tail,

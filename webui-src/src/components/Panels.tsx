@@ -47,6 +47,7 @@ export function NewSessionPanel() {
         <select value={backend} onChange={(e) => setBackend(e.target.value as Backend)}>
           <option value="claude">claude CLI · 本地</option>
           <option value="codex">codex CLI · 本地</option>
+          <option value="codebuddy">codebuddy CLI · 本地</option>
           <option value="openclaw">openclaw · 远程 OpenClaw 网关</option>
         </select>
       </label>
@@ -202,6 +203,7 @@ export function BackendsPanel() {
   const st = useStore();
   const [claudeBin, setClaudeBin] = useState("");
   const [codexBin, setCodexBin] = useState("");
+  const [codebuddyBin, setCodebuddyBin] = useState("");
   const [defaultBackend, setDefaultBackend] = useState<Backend>("claude");
   const [gws, setGws] = useState<GwDraft[]>([]);
   const [gwForm, setGwForm] = useState<GwDraft | null>(null);
@@ -211,6 +213,7 @@ export function BackendsPanel() {
     if (!st.backends) return;
     setClaudeBin(st.backends.claude_bin);
     setCodexBin(st.backends.codex_bin);
+    setCodebuddyBin(st.backends.codebuddy_bin || "codebuddy");
     setDefaultBackend(st.backends.default_backend);
     setGws(st.backends.gateways.map((g) => ({
       name: g.name, url: g.url, agent: g.agent || "main", token: "", token_tail: g.token_tail,
@@ -242,6 +245,7 @@ export function BackendsPanel() {
     store.send("backends.save", {
       claude_bin: claudeBin.trim(),
       codex_bin: codexBin.trim(),
+      codebuddy_bin: codebuddyBin.trim(),
       default_backend: defaultBackend,
       gateways: gws.map((g) => ({ name: g.name, url: g.url, agent: g.agent, token: g.token || "" })),
     });
@@ -253,10 +257,12 @@ export function BackendsPanel() {
       <div className="form-grid">
         <label>claude CLI 路径<input value={claudeBin} onChange={(e) => setClaudeBin(e.target.value)} placeholder="/usr/local/bin/claude" /></label>
         <label>codex CLI 路径<input value={codexBin} onChange={(e) => setCodexBin(e.target.value)} placeholder="codex" /></label>
+        <label>codebuddy CLI 路径<input value={codebuddyBin} onChange={(e) => setCodebuddyBin(e.target.value)} placeholder="codebuddy" /></label>
         <label>默认后端
           <select value={defaultBackend} onChange={(e) => setDefaultBackend(e.target.value as Backend)}>
             <option value="claude">claude</option>
             <option value="codex">codex</option>
+            <option value="codebuddy">codebuddy</option>
             <option value="openclaw">openclaw</option>
           </select>
         </label>
@@ -264,6 +270,7 @@ export function BackendsPanel() {
       <div className="panel-actions left">
         <button className="ghost" onClick={() => store.send("backends.test", { target: "claude" })}>测试 claude</button>
         <button className="ghost" onClick={() => store.send("backends.test", { target: "codex" })}>测试 codex</button>
+        <button className="ghost" onClick={() => store.send("backends.test", { target: "codebuddy" })}>测试 codebuddy</button>
       </div>
 
       <h3 className="group-title">远程网关（OpenClaw）</h3>

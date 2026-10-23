@@ -89,7 +89,7 @@ export default function Composer() {
         <textarea
           ref={taRef}
           rows={1}
-          placeholder={running ? "生成中…（可停止）" : s.info.backend === "claude" ? "输入消息，Enter 发送 · 可粘贴图片" : "输入消息，Enter 发送"}
+          placeholder={running ? "生成中…（可停止）" : ["claude", "codebuddy"].includes(s.info.backend) ? "输入消息，Enter 发送 · 可粘贴图片" : "输入消息，Enter 发送"}
           value={text}
           disabled={running}
           onInput={autoGrow}
@@ -105,7 +105,7 @@ export default function Composer() {
             }
           }}
         />
-        <label className={"send-clip" + (s.info.backend === "claude" ? "" : " off")} title={s.info.backend === "claude" ? "添加图片" : "仅 claude 后端支持图片"}>
+        <label className={"send-clip" + (["claude", "codebuddy"].includes(s.info.backend) ? "" : " off")} title={["claude", "codebuddy"].includes(s.info.backend) ? "添加图片" : "仅 claude / codebuddy 后端支持图片"}>
           <IconImage size={17} />
           <input
             type="file"

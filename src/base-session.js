@@ -327,10 +327,11 @@ export class BaseSession {
       return;
     }
     const imgs = sanitizeImages(images);
-    if (imgs.length && this.backend !== 'claude') {
-      // codex 走 argv、openclaw chat.send 只收文本——都没有图片通道，明确拒绝
+    if (imgs.length && !['claude', 'codebuddy'].includes(this.backend)) {
+      // codex 走 argv、openclaw chat.send 只收文本——都没有图片通道，明确拒绝；
+      // claude/codebuddy 的 stream-json user 消息原生支持 image content 块
       await this.sendWs({ post_type: 'error', session_id: this.id, code: 'no_image_support',
-        message: '该后端暂不支持发图（仅 Claude 支持）', echo });
+        message: '该后端暂不支持发图（仅 Claude / CodeBuddy 支持）', echo });
       return;
     }
     await this._ensureProcess();

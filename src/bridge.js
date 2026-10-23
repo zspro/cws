@@ -6,13 +6,14 @@ import { execFile } from 'node:child_process';
 import { BaseSession } from './base-session.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
+import { CodebuddySession } from './codebuddy-session.js';
 import { OpenclawSession, OPENCLAW_PERMISSIONS } from './openclaw-session.js';
 import {
   TOKEN, ONE_TIME_TOKENS, WORKSPACES, MAX_ACTIVE, QUEUE_MAX, MIN_TURN_INTERVAL,
   IDLE_TIMEOUT, WS_RETENTION_S, REAP_ON_DETACH, API_CHANNELS, channelState, setDefaultChannel, channelByName,
   persistOneTimeTokens, persistChannels, normalizeBaseUrl, isValidChannelName,
-  CLAUDE_BIN, CODEX_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
-  setClaudeBin, setCodexBin, setDefaultBackend, setGateways, persistBackends,
+  CLAUDE_BIN, CODEX_BIN, CODEBUDDY_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
+  setClaudeBin, setCodexBin, setCodebuddyBin, setDefaultBackend, setGateways, persistBackends,
   PLUGINS,
 } from './config.js';
 import { BASE, log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './util.js';
@@ -22,11 +23,13 @@ export function makeSession(bridge, sid, ws, opts = {}) {
   const backend = opts.backend || null;
   if (backend === 'codex') return new CodexSession(bridge, sid, ws, opts);
   if (backend === 'openclaw') return new OpenclawSession(bridge, sid, ws, opts);
+  if (backend === 'codebuddy') return new CodebuddySession(bridge, sid, ws, opts);
   if (backend === 'claude') return new ClaudeSession(bridge, sid, ws, opts);
   // revive: read backend from sess.json meta
   const meta = loadSessMetaRaw(sid);
   if (meta.backend === 'codex') return new CodexSession(bridge, sid, ws, opts);
   if (meta.backend === 'openclaw') return new OpenclawSession(bridge, sid, ws, opts);
+  if (meta.backend === 'codebuddy') return new CodebuddySession(bridge, sid, ws, opts);
   return new ClaudeSession(bridge, sid, ws, opts);
 }
 
@@ -76,7 +79,7 @@ const KX_ROLES = new Set(['user', 'kx', 'tool', 'sys', 'trigger']);
 
 // ---------- 卡西（桥的自动管理助手）提示词与内置工具 ----------
 const KX_SYSTEM_PROMPT = [
-  '你是卡西，cws 桥（Claude Code / Codex / OpenClaw 多会话 WebSocket 桥）的自动管理助手，不只是手表入口——你管理整条桥。',
+  '你是卡西，cws 桥（Claude Code / Codex / CodeBuddy / OpenClaw 多会话 WebSocket 桥）的自动管理助手，不只是手表入口——你管理整条桥。',
   '可用内置工具：会话（查/读/建/发/停/备注/删）、上游渠道（列/测/改/删/默认）、GitHub 自更新（查/拉）。',
   '工作方式：',
   '- 先调工具拿真实状态再回答；不确定就再查，绝不编造会话 ID、渠道名或数字。',
@@ -89,7 +92,7 @@ const KX_SYSTEM_PROMPT = [
 const KX_TOOLS = [
   { name: 'bridge_status', description: '桥整体状态：容量/排队/默认配置 + 全部会话（标题、备注、后端、模型、运行/排队状态）', parameters: { type: 'object', properties: {}, required: [] } },
   { name: 'session_read', description: '读某会话的元信息与最近消息（默认最后 10 条）', parameters: { type: 'object', properties: { session_id: { type: 'string', description: '会话 ID' }, limit: { type: 'number', description: '返回最近 N 条（1-50，默认 10）' } }, required: ['session_id'] } },
-  { name: 'session_create', description: '新建会话（不自动发消息，之后用 session_send 发第一条）。backend: claude/codex/openclaw（openclaw 需网关配置，一般用 claude/codex）', parameters: { type: 'object', properties: { backend: { type: 'string', description: 'claude | codex | openclaw' }, channel: { type: 'string', description: '上游渠道名（留空=默认）' }, model: { type: 'string', description: '模型（留空=渠道默认）' }, permission_mode: { type: 'string', description: '权限模式，如 default/acceptEdits/bypassPermissions' }, remark: { type: 'string', description: '备注（≤60 字）' } }, required: [] } },
+  { name: 'session_create', description: '新建会话（不自动发消息，之后用 session_send 发第一条）。backend: claude/codex/codebuddy/openclaw（openclaw 需网关配置，一般用 claude/codex/codebuddy）', parameters: { type: 'object', properties: { backend: { type: 'string', description: 'claude | codex | codebuddy | openclaw' }, channel: { type: 'string', description: '上游渠道名（留空=默认）' }, model: { type: 'string', description: '模型（留空=渠道默认）' }, permission_mode: { type: 'string', description: '权限模式，如 default/acceptEdits/bypassPermissions' }, remark: { type: 'string', description: '备注（≤60 字）' } }, required: [] } },
   { name: 'session_send', description: '向会话发送一条消息并开始一轮（回复异步推送）', parameters: { type: 'object', properties: { session_id: { type: 'string' }, text: { type: 'string' } }, required: ['session_id', 'text'] } },
   { name: 'session_stop', description: '停止会话当前这一轮', parameters: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'] } },
   { name: 'session_remark', description: '设置会话备注（≤60 字）', parameters: { type: 'object', properties: { session_id: { type: 'string' }, remark: { type: 'string' } }, required: ['session_id', 'remark'] } },
@@ -519,7 +522,7 @@ export class Bridge {
           // 不为一行权限切换拉起整个会话
           const sid = params.session_id;
           const mode = String(params.mode || '');
-          const modes = { claude: ['default', 'acceptEdits', 'bypassPermissions', 'plan'], codex: ['read-only', 'workspace-write', 'full-auto', 'danger-full-access'], openclaw: OPENCLAW_PERMISSIONS };
+          const modes = { claude: ['default', 'acceptEdits', 'bypassPermissions', 'plan'], codex: ['read-only', 'workspace-write', 'full-auto', 'danger-full-access'], codebuddy: ['default', 'acceptEdits', 'bypassPermissions', 'plan'], openclaw: OPENCLAW_PERMISSIONS };
           const meta = isValidSid(sid) && fs.existsSync(path.join(WORKSPACES, sid, 'turnlog.jsonl'))
             ? loadSessMetaRaw(sid) : null;
           if (meta && (modes[meta.backend || 'claude'] || []).includes(mode)) {
@@ -641,7 +644,8 @@ export class Bridge {
     const model = params.model || null;
     const backend = params.backend === 'codex' ? 'codex'
       : (params.backend === 'openclaw' ? 'openclaw'
-        : (params.backend === 'claude' ? 'claude' : null));
+        : (params.backend === 'codebuddy' ? 'codebuddy'
+          : (params.backend === 'claude' ? 'claude' : null)));
     const existing = this.sessions.get(sid);
     if (existing && !existing.closed) {
       // same-name reconnect = takeover: rebind ws, resync identity, never restart
@@ -700,13 +704,15 @@ export class Bridge {
       return;
     }
     if (!channel && channelState.defaultChannel) channel = channelByName(channelState.defaultChannel);
-    // 后端-渠道协议校验：anthropic 渠道只配 claude，openai 渠道只配 codex
+    // 后端-渠道协议校验：anthropic 渠道只配 claude，openai 渠道只配 codex/codebuddy
     if (channel && !this._channelProtocolOk(backend, channel)) {
       await this._wsSend(ws, {
         post_type: 'error', code: 'bad_backend_channel', channel: channel.name,
         message: (backend === 'codex'
           ? 'codex 后端不能使用 anthropic 协议渠道 ' + channel.name + '（glm/kimi），请选 openai 协议渠道或机器默认'
-          : 'claude 后端不能使用 openai 协议渠道 ' + channel.name + '，请选 anthropic 协议渠道'),
+          : backend === 'codebuddy'
+            ? 'codebuddy 后端不能使用 anthropic 协议渠道 ' + channel.name + '（glm/kimi），请选 openai 协议渠道或机器默认'
+            : 'claude 后端不能使用 openai 协议渠道 ' + channel.name + '，请选 anthropic 协议渠道'),
         echo,
       });
       return;
@@ -1556,7 +1562,7 @@ export class Bridge {
         };
       }
       case 'session_create': {
-        const backend = ['claude', 'codex', 'openclaw'].includes(a.backend) ? a.backend : null;
+        const backend = ['claude', 'codex', 'codebuddy', 'openclaw'].includes(a.backend) ? a.backend : null;
         const sid = crypto.randomBytes(16).toString('hex');
         await this.newSession(ws, {
           session_id: sid, backend,
@@ -1726,12 +1732,12 @@ export class Bridge {
     await this._wsSend(ws, { post_type: 'update_state', phase: 'apply', ...(await this.updateApplyCore()), echo });
   }
 
-  /** 后端-渠道协议兼容性：auto 通用；anthropic 只配 claude；openai 只配 codex。 */
+  /** 后端-渠道协议兼容性：auto 通用；anthropic 只配 claude；openai 配 codex/codebuddy。 */
   _channelProtocolOk(backend, ch) {
     if (!ch) return true;
     const proto = ch.protocol || 'auto';
     if (proto === 'auto' || backend === 'openclaw') return true;
-    if (backend === 'codex') return proto !== 'anthropic';
+    if (backend === 'codex' || backend === 'codebuddy') return proto !== 'anthropic';
     if (backend === 'claude') return proto !== 'openai';
     return true;
   }
@@ -1774,13 +1780,14 @@ export class Bridge {
     }
     await this._wsSend(ws, {
       post_type: 'backends', claude_bin: CLAUDE_BIN, codex_bin: CODEX_BIN,
-      default_backend: DEFAULT_BACKEND, gateways, echo,
+      codebuddy_bin: CODEBUDDY_BIN, default_backend: DEFAULT_BACKEND, gateways, echo,
     });
   }
 
   async backendsSave(ws, params, echo) {
     if (params.claude_bin !== undefined) setClaudeBin(String(params.claude_bin || '').trim() || '/usr/local/bin/claude');
     if (params.codex_bin !== undefined) setCodexBin(String(params.codex_bin || '').trim() || 'codex');
+    if (params.codebuddy_bin !== undefined) setCodebuddyBin(String(params.codebuddy_bin || '').trim() || 'codebuddy');
     if (params.default_backend !== undefined) setDefaultBackend(params.default_backend);
     if (Array.isArray(params.gateways)) {
       const next = {};
@@ -1815,8 +1822,8 @@ export class Bridge {
     const reply = (ok, detail) => this._wsSend(ws, {
       post_type: 'backend_test', target, ok, detail, latency_ms: Math.round((now() - t0) * 1000), echo,
     });
-    if (target === 'claude' || target === 'codex') {
-      const bin = target === 'claude' ? CLAUDE_BIN : CODEX_BIN;
+    if (target === 'claude' || target === 'codex' || target === 'codebuddy') {
+      const bin = target === 'claude' ? CLAUDE_BIN : target === 'codex' ? CODEX_BIN : CODEBUDDY_BIN;
       try {
         const { spawn } = await import('node:child_process');
         const out = await new Promise((resolve) => {

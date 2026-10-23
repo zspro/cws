@@ -183,6 +183,7 @@ body {
 }
 .be-dot.be-claude { color: var(--ink); }
 .be-dot.be-codex { color: var(--sub); }
+.be-dot.be-codebuddy { color: var(--warn); }
 .be-dot.be-openclaw { color: var(--rose); }
 
 .badge {

@@ -111,3 +111,61 @@ scripts/mock-codex.mjs 全协议 mock（免 key），真实 codex 只做无鉴�
 - 实测：backends.list 回显三后端；backends.test claude→2.1.269、codex→0.154.0、
   openclaw→connected 17ms（mock 网关）；backends.save 改 codex_bin+网关写回 config.json。
 
+
+## 九、CodeBuddy 后端（@tencent-ai/codebuddy-code）研究与对接实测（2026-10-23 追加）
+
+### 实机调研（真 CLI 2.170.0，`npm install -g @tencent-ai/codebuddy-code`）
+
+- bin：`codebuddy`（别名 cbc/codebuddy-code）；`codebuddy --version`→2.170.0，正常退出。
+- stream-json 全套支持：`-p --input-format stream-json --output-format stream-json
+  --include-partial-messages --verbose`；事件 schema 与 claude 同构（system/init、
+  stream_event text_delta/thinking_delta、assistant、result；result 额外带
+  usage/duration_ms/num_turns/errors）。**启动即发 init（连发两次属正常）**，
+  无 claude 的 initialize 握手。
+- `--session-id <uuid>` 实测支持（网页文档未列）；`--resume <id>` +
+  `--resume-create-missing` 支持（transcript 被 30 天清理后同 id 重开不失败）。
+  历史：`~/.codebuddy/projects/<munged-cwd>/<session-id>.jsonl`。
+- `--permission-mode` 合法值：acceptEdits / bypassPermissions / default / plan /
+  dontAsk / auto（适配器白名单沿用 claude 四档，未知值回落 default）。
+- `--allowedTools`（camelCase，逗号分隔单值传参，避免 commander 变长参数吞选项）。
+- `-y` = `--dangerously-skip-permissions`（=bypassPermissions）；
+  `CODEBUDDY_IS_SANDBOX=1` 仅进程环境变量生效（shell export 无效）且需配 -y。
+- **headless 无权限询问通道**（无 `--permission-prompt-tool`）：default 档下非白名单
+  工具由 CLI 直接拒绝 → 无 claude 的 ask 卡片，全放行用 bypassPermissions。
+- 环境变量：CODEBUDDY_BASE_URL（原样使用）、CODEBUDDY_API_KEY（-p 模式必用）、
+  CODEBUDDY_CUSTOM_HEADERS（"Name: Value" 多行，{session_id} 占位符）。
+  模型请求走官方 OpenAI SDK（base_url 拼 /chat/completions，Bearer）→ 只配 openai 协议渠道。
+- control_request/control_response 协议存在（rewind 用）；桥对不支持的控制请求回 deny。
+
+### 实现与验收
+
+- `src/codebuddy-session.js`：常驻 stream-json 适配器；首启 `--session-id`，
+  续轮/复活 `--resume <thread_id||cli_uuid> --resume-create-missing`；init 回读
+  session_id ≠ 预置 uuid 时落 thread_id 兜底；渠道→env 注入；权限/渠道切换=重启
+  进程换参（运行中改记 pending_mode，下一轮 _ensureProcess 边界重启生效）；
+  abort/_killpg 与 claude 同构；图片输入放行（协议同构，真 CLI 未实弹复测）。
+- `scripts/mock-codebuddy.mjs`：启动即发 init（回显 --session-id/--resume/权限档）、
+  无握手、control_request→deny、工具调用直接拒绝（headless 语义）、数到→300 delta。
+- wsclient 场景 10.codebuddy_basic：new_session(backend=codebuddy)→session_ready.
+  backend==='codebuddy'→"1+1"→final 含 2。**10 场景全过 SUMMARY_OK**（mock 网关）。
+- backends.list 回显 codebuddy_bin；backends.test codebuddy ok（真 CLI --version→2.170.0）。
+- WebUI：新会话后端选项、后端面板 codebuddy_bin/默认后端/测试按钮、B 徽标、
+  权限档选项、渠道过滤（anthropic 渠道禁配 codebuddy）、图片门放行；tsc+vite 构建过。
+
+### 验收中抓出并修掉的两个 bug
+
+1. **每轮白等 10s**：bridge 对非 claude 后端 new_session/revive 时预置
+   `ready_announced=true` 并代发 session_ready（codex/openclaw 按轮拉起进程，
+   该预置正确）；但 codebuddy 常驻、首启靠 init 事件 resolve ready——_announceReady
+   被 ready_announced 门控挡住，_ensureProcess 每轮都吃满 10s 竞速超时。
+   修法：resolve ready 提到 announce 门控之前（幂等），session_ready 仍只发一次。
+   实测 proc_start→turn 从 10.00s 降到 29ms。
+2. **首启参数错**：start() 先置 started_once=true 再算 _buildArgs()，首启误带
+   `--resume <uuid> --resume-create-missing`，没走 `--session-id` 固定会话身份。
+   修法：先算 args 再置标记（ps 验证首启 args 含 --session-id）。
+
+### 未覆盖项
+
+- 图片输入：桥与 WebUI 已放行（协议与 claude 同构），真 CLI 未实弹复测。
+- dontAsk/auto 权限档未映射（CLI 支持，桥白名单沿用 claude 四档）。
+

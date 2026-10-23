@@ -2,6 +2,7 @@
   "port": 8642,
   "claude_bin": "/usr/local/bin/claude",
   "codex_bin": "codex",
+  "codebuddy_bin": "codebuddy",
   "default_backend": "claude",
   "max_active_sessions": 3,
   "queue_max": 5,
