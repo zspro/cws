@@ -60,6 +60,21 @@ export const CFG = cfg;
 export const TOKEN = String(cfg.token || '');
 export const ONE_TIME_TOKENS = new Set(cfg.one_time_tokens || []);
 export const PORT = Number(cfg.port || 8642);
+
+// ---- 协议 v0.3：首帧鉴权 + hello 版本交换 ----
+// SERVER_VERSION 取 package.json（唯一事实源）；SERVER_CAPS 是服务端自报的
+// 能力集，客户端（笔端/WebUI/QQ）凭 hello 回帧做特性 gating。
+export const SERVER_VERSION = (() => {
+  try {
+    return String(JSON.parse(fs.readFileSync(path.join(BASE, 'package.json'), 'utf8')).version || '');
+  } catch {
+    return '';
+  }
+})();
+export const SERVER_CAPS = ['frame_auth', 'hello', 'backends', 'remark'];
+// 无 token 升级进来（v0.3 路径）的连接，等首帧 auth 的窗口；超时未鉴权即断。
+// URL ?token= 鉴权（v0.2，WebUI/QQ 在用）不受影响。
+export const FRAME_AUTH_TIMEOUT_S = Number(cfg.frame_auth_timeout_s ?? 10);
 export let CLAUDE_BIN = cfg.claude_bin || '/usr/local/bin/claude';
 export let CODEX_BIN = cfg.codex_bin || 'codex';
 export let CODEBUDDY_BIN = cfg.codebuddy_bin || 'codebuddy';

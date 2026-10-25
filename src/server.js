@@ -125,20 +125,28 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const token = url.searchParams.get('token') || '';
-  let authorized = safeEqual(token, TOKEN);
-  if (!authorized && ONE_TIME_TOKENS.has(token)) {
-    ONE_TIME_TOKENS.delete(token);
-    persistOneTimeTokens();
-    authorized = true;
-    log('otp_consumed', {});
+  let authorized = false;
+  if (token !== '') {
+    // v0.2 路径（WebUI/QQ/旧笔端）：URL ?token= 升级期鉴权。
+    // 带 token 但错误 → 直接 401，不给帧内试探的余地
+    authorized = safeEqual(token, TOKEN);
+    if (!authorized && ONE_TIME_TOKENS.has(token)) {
+      ONE_TIME_TOKENS.delete(token);
+      persistOneTimeTokens();
+      authorized = true;
+      log('otp_consumed', {});
+    }
+    if (!authorized) {
+      log('auth_fail', {});
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
   }
-  if (!authorized) {
-    log('auth_fail', {});
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-    return;
-  }
+  // v0.3 路径：无 token 升级，连接进来后限时等首帧 auth（bridge.startFrameAuth）。
+  // token 不再出现在 URL → 不进 Cloudflare/nginx 访问日志
   wss.handleUpgrade(req, socket, head, (ws) => {
+    if (!authorized) bridge.startFrameAuth(ws);
     wss.emit('connection', ws, req);
   });
 });

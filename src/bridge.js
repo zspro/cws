@@ -14,7 +14,7 @@ import {
   persistOneTimeTokens, persistChannels, normalizeBaseUrl, isValidChannelName,
   CLAUDE_BIN, CODEX_BIN, CODEBUDDY_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
   setClaudeBin, setCodexBin, setCodebuddyBin, setDefaultBackend, setGateways, persistBackends,
-  PLUGINS,
+  PLUGINS, SERVER_VERSION, SERVER_CAPS, FRAME_AUTH_TIMEOUT_S,
 } from './config.js';
 import { BASE, log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './util.js';
 
@@ -307,7 +307,8 @@ export class Bridge {
 
   handleConn(ws) {
     this.conns.add(ws);
-    log('conn_open', {});
+    if (ws._authed === undefined) ws._authed = true; // v0.2 URL-token 路径：升级期已鉴权
+    log('conn_open', { frame_auth: ws._authed === false });
     ws.on('message', async (data) => {
       let frame;
       try {
@@ -323,9 +324,36 @@ export class Bridge {
     });
     ws.on('close', async () => {
       this.conns.delete(ws);
+      if (ws._authTimer) { clearTimeout(ws._authTimer); ws._authTimer = null; }
       log('conn_close', {});
       await this.onWsClosed(ws);
     });
+  }
+
+  /** v0.3 首帧鉴权：无 token 升级进来的连接，限时等 auth 帧；期间只放行
+   *  auth/ping（ping 回 pong 无数据泄露，保住老心跳路径）；超时 4001 断开。 */
+  startFrameAuth(ws) {
+    ws._authed = false;
+    ws._authTimer = setTimeout(() => {
+      ws._authTimer = null;
+      if (ws._authed === false) {
+        log('auth_timeout', {});
+        try { ws.close(4001, 'auth timeout'); } catch {}
+      }
+    }, FRAME_AUTH_TIMEOUT_S * 1000);
+  }
+
+  /** auth 帧核心（action 路由用）：token/一次性 token 校验。 */
+  authCore(token) {
+    const t = String(token || '');
+    if (t && safeEqual(t, TOKEN)) return true;
+    if (t && ONE_TIME_TOKENS.has(t)) {
+      ONE_TIME_TOKENS.delete(t);
+      persistOneTimeTokens();
+      log('otp_consumed', {});
+      return true;
+    }
+    return false;
   }
 
   async onWsClosed(ws) {
@@ -423,7 +451,43 @@ export class Bridge {
         }
       }
     }
+    // v0.3 首帧鉴权门禁：未鉴权连接只放行 auth/ping（ping 回 pong 无数据泄露），
+    // 其余一律 not_authed 拒答——广播帧本就不按连接发，未鉴权拿不到任何内容
+    if (ws._authed === false && action !== 'auth' && action !== 'ping') {
+      await this._wsSend(ws, { post_type: 'error', code: 'not_authed', echo });
+      return;
+    }
     switch (action) {
+      case 'auth': {
+        // v0.3 首帧鉴权：token 不走 URL（不进访问日志），连接后首帧提交。
+        // 失败回 auth_rejected 并以 4001 断开（客户端 close-code 分支按拒绝令牌处理）
+        if (this.authCore(params.token)) {
+          ws._authed = true;
+          if (ws._authTimer) { clearTimeout(ws._authTimer); ws._authTimer = null; }
+          log('auth_ok', { via: 'frame' });
+          await this._wsSend(ws, { post_type: 'auth_ok', echo });
+        } else {
+          log('auth_fail', { via: 'frame' });
+          await this._wsSend(ws, { post_type: 'error', code: 'auth_rejected', echo });
+          try { ws.close(4001, 'auth rejected'); } catch {}
+        }
+        break;
+      }
+      case 'hello': {
+        // v0.3 版本/能力交换：客户端自报身份，服务端回版本 + caps。
+        // 客户端信息记在连接上（日志/后续 bridge_status 可见）
+        ws._client = {
+          client: String(params.client || ''),
+          version: String(params.version || ''),
+          caps: Array.isArray(params.caps) ? params.caps.map(String) : [],
+        };
+        log('hello', ws._client);
+        await this._wsSend(ws, {
+          post_type: 'hello', echo,
+          server: 'cws', version: SERVER_VERSION, caps: SERVER_CAPS,
+        });
+        break;
+      }
       case 'ping':
         await this._wsSend(ws, { post_type: 'pong', ts: now(), echo });
         break;
