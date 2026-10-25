@@ -2,7 +2,19 @@
 
 把**本地 claude / codex / codebuddy CLI** 与**远程 OpenClaw 网关**统一成多会话 WebSocket 服务：
 QQ 机器人、WebUI、任意客户端都能在线创建/接管会话、流式对话、审批权限、切换模型。
-协议 v0.2（与 Python 版 cc-bridge 完全兼容），内置 WebUI。
+协议 v0.2（与 Python 版 cc-bridge 完全兼容）+ v0.3 增量，内置 WebUI。
+
+## 协议 v0.3（2.1.0，向后兼容）
+
+- **首帧鉴权**：连接可不带 `?token=`，升级后限时（`frame_auth_timeout_s`，默认 10s）
+  等首帧 `{action:"auth", params:{token}}` → 回 `auth_ok`；期间只放行 auth/ping，
+  其余 `not_authed` 拒答，超时/错 token 以 4001 断开。token 从此不进反代访问日志。
+  URL `?token=`（v0.2，WebUI/QQ）原样兼容；一次性 token 两条路都认。
+- **hello 版本交换**：`{action:"hello", params:{client, version, caps}}` →
+  `{post_type:"hello", server:"cws", version, caps}`（SERVER_VERSION 取 package.json，
+  SERVER_CAPS 在 src/config.js）。客户端凭 caps 做特性 gating。
+- 验收：`node scripts/test-v03-auth.mjs`（12 项：新旧双路径/未鉴权门禁/一次性
+  token 消费/静默超时断开）。
 
 ## 四后端架构（一站式遥控台）
 

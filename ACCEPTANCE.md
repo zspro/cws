@@ -169,3 +169,13 @@ scripts/mock-codex.mjs 全协议 mock（免 key），真实 codex 只做无鉴�
 - 图片输入：桥与 WebUI 已放行（协议与 claude 同构），真 CLI 未实弹复测。
 - dontAsk/auto 权限档未映射（CLI 支持，桥白名单沿用 claude 四档）。
 
+
+## v0.3 首帧鉴权 + hello（2026-10-25，ab482be）
+
+环境：Windows Node v24，本地起服（端口 18642，frame_auth_timeout_s=3），
+`node scripts/test-v03-auth.mjs` 12/12 PASS：未鉴权 hello 拒（not_authed）、
+错 token auth_rejected + 4001 断、未鉴权 ping 仍 pong、对 token auth_ok、
+hello 回版本能力（cws 2.1.0 caps×4）、URL token 直连即用、错 URL token 升级期
+401、一次性 token 首帧消费 + 二次拒、静默连接窗口后 4001 断。
+生产（pstore-new）部署后无 token 探测：连接保持 → 10s 后 close 4001 auth timeout；
+错 URL token 401；webui 200。WebUI/QQ 的 URL token 路径未改动。
