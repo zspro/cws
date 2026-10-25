@@ -1844,8 +1844,37 @@ export class Bridge {
     }
     await this._wsSend(ws, {
       post_type: 'backends', claude_bin: CLAUDE_BIN, codex_bin: CODEX_BIN,
-      codebuddy_bin: CODEBUDDY_BIN, default_backend: DEFAULT_BACKEND, gateways, echo,
+      codebuddy_bin: CODEBUDDY_BIN, default_backend: DEFAULT_BACKEND,
+      models: await this.officialModels(), gateways, echo,
     });
+  }
+
+  /** 各后端【官方服务】（机器默认，无渠道）的模型表——codebuddy 从
+   *  `codebuddy --help` 的 --model 行实时解析（CLI 更新名单自动跟随），
+   *  解析失败回落静态快照（2026-10-25 实机抓取）。claude/codex 官方名单
+   *  无可靠的 CLI 内省来源，暂不提供（走渠道拉取）。结果缓存进程级。 */
+  async officialModels() {
+    if (this._officialModels) return this._officialModels;
+    const fallbackCodebuddy = [
+      'hy4-preview', 'hy3', 'hy3-x', 'step-5-preview', 'space-bunny',
+      'deepseek-v4.1-flash', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2',
+      'glm-5.1', 'glm-5v-turbo', 'minimax-m3.1-flash', 'minimax-m3-pay', 'minimax-m2.7',
+      'kimi-k3.1-pro-highspeed', 'kimi-k3.1-pro', 'kimi-k3-2', 'kimi-k2.8-preview',
+      'deepseek-v4-pro', 'mimo-v2.6-pro',
+    ];
+    let codebuddy = [];
+    try {
+      const { execFile } = await import('node:child_process');
+      const help = await new Promise((resolve) => {
+        const p = execFile(CODEBUDDY_BIN, ['--help'], { timeout: 15000 }, (e, stdout) => resolve(e ? '' : String(stdout || '')));
+        if (p && typeof p.on === 'function') p.on('error', () => resolve(''));
+      });
+      const m = /--model <model>.*?supported:\s*\(([^)]+)\)/s.exec(help.replace(/\n\s+/g, ' '));
+      if (m) codebuddy = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+    } catch {}
+    if (!codebuddy.length) codebuddy = fallbackCodebuddy;
+    this._officialModels = { codebuddy };
+    return this._officialModels;
   }
 
   async backendsSave(ws, params, echo) {
