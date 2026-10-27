@@ -1,7 +1,7 @@
 // ChatHead.tsx —— 单排顶栏：汉堡 / 品牌 / 标题 / 停止·齿轮·删除 / 新建。
 // 卡西管理台视图时标题固定为"卡西"；会话视图同旧（设置卡收在齿轮里）。
 import { useEffect, useState } from "react";
-import { PERM_OPTIONS, store, useStore } from "../store";
+import { AGENT_OPTIONS, PERM_OPTIONS, store, useStore } from "../store";
 import { IconBridge, IconGear, IconMenu, IconPlus, IconStop, IconTrash, IconWatch } from "../icons";
 
 export default function ChatHead({ onNav }: { onNav: () => void }) {
@@ -11,13 +11,14 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
   const info = s?.info;
   const [model, setModel] = useState("");
   const [setOpen, setSetOpen] = useState(false);
+  const codebuddyModels = info?.backend === "codebuddy" ? (st.backends?.models?.codebuddy || []) : [];
 
   useEffect(() => { setModel(info?.model || ""); }, [st.current, info?.model]);
   useEffect(() => { if (inKx) setSetOpen(false); }, [inKx]);
 
   const meta = info
     ? info.backend + (info.channel ? " · " + info.channel : "") + (info.model ? " / " + info.model : "")
-      + (info.queued ? ` · 排队 #${info.queue_position ?? "…"}` : info.turn_active ? " · 运行中" : "")
+      + (info.queued ? ` · 排队 #${info.queue_position ?? "…"}` : info.compacting ? " · 压缩中" : info.turn_active ? " · 运行中" : "")
     : "";
 
   return (
@@ -89,6 +90,19 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                 {(PERM_OPTIONS[info.backend] || PERM_OPTIONS.claude).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
             </div>
+            {info.backend === "codebuddy" && (
+              <div className="set-field">
+                <span className="set-label">Agent 模式</span>
+                <select
+                  className="ctrl"
+                  title="Agent 模式"
+                  value={info.agent_mode || "ptc"}
+                  onChange={(e) => store.applyAgent(info.session_id, e.target.value)}
+                >
+                  {AGENT_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </div>
+            )}
             <div className="set-field">
               <span className="set-label">上游渠道</span>
               <select
@@ -110,13 +124,19 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
               <div className="set-row">
                 <input
                   className="ctrl ch-model"
-                  placeholder="模型"
+                  placeholder={info.backend === "codebuddy" && codebuddyModels.length ? "选择或输入模型" : "模型"}
                   title={model || "模型"}
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") store.applyModel(info.session_id, info.channel || "", model); }}
+                  list="codebuddy-models-head"
                 />
                 <button className="ghost" onClick={() => store.applyModel(info.session_id, info.channel || "", model)}>应用</button>
+                {info.backend === "codebuddy" && codebuddyModels.length > 0 && (
+                  <datalist id="codebuddy-models-head">
+                    {codebuddyModels.map((m) => <option key={m} value={m} />)}
+                  </datalist>
+                )}
               </div>
             </div>
           </div>

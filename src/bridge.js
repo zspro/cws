@@ -249,7 +249,7 @@ export class Bridge {
       if ((ws && ws.readyState !== ws.OPEN) || this.sessions.has(sid)) continue;
       const s = makeSession(this, sid, ws, {
         permissionMode: item.permissionMode, channel: item.channel,
-        model: item.model, backend: item.backend,
+        model: item.model, backend: item.backend, agentMode: item.agentMode,
       });
       this.sessions.set(sid, s);
       s.pending_echo = echo;
@@ -278,6 +278,7 @@ export class Bridge {
       post_type: 'session_ready', session_id: s.id,
       model: s.model_name, channel: (s.channel || {}).name,
       turn_active: s.turn_active, permission_mode: s.permission_mode,
+      agent_mode: s.agent_mode || null,
       backend: s.backend, gateway: s.gatewayName || null, echo,
     });
   }
@@ -569,6 +570,9 @@ export class Bridge {
       case 'set_model':
         await this.setModel(ws, params, echo);
         break;
+      case 'set_agent':
+        await this.setAgent(ws, params, echo);
+        break;
       case 'ask_reply': {
         const s = this.sessions.get(params.session_id);
         if (!s || s.closed) {
@@ -706,6 +710,8 @@ export class Bridge {
       }
     }
     const model = params.model || null;
+    // agent 模式（仅 codebuddy 后端有意义）：null = CLI 默认
+    const agentMode = params.agent_mode ? String(params.agent_mode) : null;
     const backend = params.backend === 'codex' ? 'codex'
       : (params.backend === 'openclaw' ? 'openclaw'
         : (params.backend === 'codebuddy' ? 'codebuddy'
@@ -738,6 +744,16 @@ export class Bridge {
         changed = true;
         log('takeover_sync', { session_id: sid, permission_mode: wantMode, deferred: procAliveNow });
       }
+      if (agentMode !== null && existing.backend === 'codebuddy'
+          && (existing.agent_mode || null) !== agentMode) {
+        existing.agent_mode = agentMode;
+        if (procAliveNow) {
+          if (existing.turn_active) existing.pending_agent = agentMode;
+          else existing._deferSwitchAgent && existing._deferSwitchAgent(agentMode);
+        }
+        changed = true;
+        log('takeover_sync', { session_id: sid, agent_mode: agentMode, deferred: procAliveNow });
+      }
       if (changed) existing._saveSessMeta();
       for (const entry of existing.pending_asks.values()) {
         if (entry.ask_frame) await this._wsSend(ws, entry.ask_frame);
@@ -749,6 +765,7 @@ export class Bridge {
         channel: (existing.channel || {}).name,
         turn_active: existing.turn_active,
         permission_mode: existing.permission_mode,
+        agent_mode: existing.agent_mode || null,
         backend: existing.backend,
         gateway: existing.gatewayName || null,
         echo,
@@ -784,7 +801,7 @@ export class Bridge {
     if (params.resume) {
       const s = makeSession(this, sid, ws, {
         resume: true, permissionMode: params.permission_mode,
-        channel, model, backend,
+        channel, model, backend, agentMode,
         gateway: params.gateway, remoteKey: params.remote_key, agentId: params.agent,
       });
       this.sessions.set(sid, s);
@@ -795,6 +812,7 @@ export class Bridge {
         post_type: 'session_ready', session_id: sid,
         model: s.model_name, channel: (s.channel || {}).name,
         turn_active: s.turn_active, permission_mode: s.permission_mode,
+        agent_mode: s.agent_mode || null,
         backend: s.backend, gateway: s.gatewayName || null, echo,
       });
       const warm = replay.length && this.activeCount() < this.maxActive && s.backend === 'claude';
@@ -811,7 +829,7 @@ export class Bridge {
       }
       this.queue.push({
         sid, ws, echo, ts: now(),
-        permissionMode: params.permission_mode, channel, model, backend,
+        permissionMode: params.permission_mode, channel, model, backend, agentMode,
       });
       await this._wsSend(ws, {
         post_type: 'session_queued', session_id: sid, position: this.queue.length, echo,
@@ -820,7 +838,7 @@ export class Bridge {
       return;
     }
     const s = makeSession(this, sid, ws, {
-      permissionMode: params.permission_mode, channel, model, backend,
+      permissionMode: params.permission_mode, channel, model, backend, agentMode,
       gateway: params.gateway, remoteKey: params.remote_key, agentId: params.agent,
     });
     this.sessions.set(sid, s);
@@ -906,6 +924,7 @@ export class Bridge {
         backend: s.backend,
         gateway: s.gatewayName || null,
         permission_mode: s.permission_mode,
+        agent_mode: s.agent_mode || null,
         title: s.turnTitle(),
         remark: s.remark || '',
       });
@@ -1834,6 +1853,39 @@ export class Bridge {
     await s.setChannel(chan, params.model, echo);
   }
 
+  /** agent 模式切换：仅 codebuddy 后端。内存会话走 setAgent（重启生效），
+   *  lazy 会话直接落盘 sess.json（同 set_permission 思路，复活时读 meta 生效）。 */
+  async setAgent(ws, params, echo) {
+    const sid = params.session_id;
+    const mode = params.mode ? String(params.mode) : null;
+    const s = this.sessions.get(sid);
+    if (!s || s.closed) {
+      if (isValidSid(sid) && fs.existsSync(path.join(WORKSPACES, sid, 'turnlog.jsonl'))) {
+        const meta = loadSessMetaRaw(sid);
+        if ((meta.backend || 'claude') === 'codebuddy') {
+          meta.agent_mode = mode || '';
+          try {
+            fs.writeFileSync(path.join(WORKSPACES, sid, 'sess.json'), JSON.stringify(meta));
+            await this._wsSend(ws, { post_type: 'agent_ack', session_id: sid, agent: mode, applied: false, echo });
+          } catch {
+            await this._wsSend(ws, { post_type: 'error', code: 'agent_save_failed', session_id: sid, echo });
+          }
+          return;
+        }
+      }
+      await this._wsSend(ws, { post_type: 'error', code: 'unknown_session', session_id: sid, echo });
+      return;
+    }
+    if (s.backend !== 'codebuddy') {
+      await this._wsSend(ws, {
+        post_type: 'error', code: 'unsupported_backend', session_id: sid,
+        message: 'agent 模式仅 codebuddy 后端支持', echo,
+      });
+      return;
+    }
+    await s.setAgent(mode, echo);
+  }
+
   // ---------- backends (claude/codex/openclaw gateway) config ----------
   async backendsList(ws, echo) {
     const gateways = [];
@@ -1845,7 +1897,7 @@ export class Bridge {
     await this._wsSend(ws, {
       post_type: 'backends', claude_bin: CLAUDE_BIN, codex_bin: CODEX_BIN,
       codebuddy_bin: CODEBUDDY_BIN, default_backend: DEFAULT_BACKEND,
-      models: await this.officialModels(), gateways, echo,
+      models: await this.officialModels(), agents: this.officialAgents(), gateways, echo,
     });
   }
 
@@ -1875,6 +1927,15 @@ export class Bridge {
     if (!codebuddy.length) codebuddy = fallbackCodebuddy;
     this._officialModels = { codebuddy };
     return this._officialModels;
+  }
+
+  /** codebuddy 内置 agent 模式表（--agent 取值）。CLI 无内省来源（--help
+   *  不枚举，`agents` 子命令是 TUI 视图），静态快照取自安装版 dist 的
+   *  isBuiltinAgentModeName（2.170：cli/ptc/minimal/create/multitask，
+   *  cli 显示为「标准模式」）。未知名 CLI 会静默回落默认，因此仅作展示，
+   *  会话侧另有白名单兜底。 */
+  officialAgents() {
+    return { codebuddy: ['cli', 'ptc', 'minimal', 'create', 'multitask'] };
   }
 
   async backendsSave(ws, params, echo) {

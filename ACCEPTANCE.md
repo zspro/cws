@@ -179,3 +179,44 @@ hello 回版本能力（cws 2.1.0 caps×4）、URL token 直连即用、错 URL 
 401、一次性 token 首帧消费 + 二次拒、静默连接窗口后 4001 断。
 生产（pstore-new）部署后无 token 探测：连接保持 → 10s 后 close 4001 auth timeout；
 错 URL token 401；webui 200。WebUI/QQ 的 URL token 路径未改动。
+
+## CodeBuddy 上下文压缩适配（2026-10-25）
+
+CLI 2.175 的 stream-json 协议里，压缩相关事件共三个（见
+`dist-server/types/node/cli/stream-json-protocol.d.ts`）：
+
+- `system/compact_boundary`：压缩完成，带 `compact_metadata{trigger: manual|auto, pre_tokens}`；
+- `system/status`：`status: 'compacting' | null`，压缩开始/结束；
+- `system/keepalive`：轮内周期性存活帧（事件循环还在转才会发）。
+
+桥原先只识别 `system/init`，其余 subtype 全部丢弃 → 压缩对客户端不可见；
+压缩期间没有正文输出，长压缩还可能被轮内空闲计时器误判。
+
+### 实现
+
+- `src/codebuddy-session.js`
+  - `compact_boundary` → 落一条 sys 流水「上下文已压缩（自动/手动，压缩前 N tokens）」
+    （重连 history 可回放）+ 广播 `compact` 帧（`text/trigger/pre_tokens/mid`）。
+  - `status` → 广播 `compacting` 帧（`compacting: true|false`），并给轮内空闲计时器续期。
+  - `keepalive` → 刷新 `last_activity`（任何 stdout 行本就续期，此处显式语义化）。
+- `src/base-session.js`：`STREAM_POST_TYPES` 增加 `compact / compacting`（多端广播）。
+- WebUI：`store.ts` 处理 `compact`（sys 行，按 mid 去重）/`compacting`（`info.compacting`）；
+  `ChatHead` 顶栏显示「压缩中」；`final`/`turn_aborted`/`session_ready` 复位标志。
+- README 桥→客户端 post_type 列表补两个帧。
+
+### 验收（隔离测试服 :18643，mock-codebuddy）
+
+- `scripts/mock-codebuddy.mjs` 增压缩序列（status→boundary→status→result）。
+- wsclient 场景 `11.codebuddy_compact` PASS：
+  `compacting:true` → `compact`（trigger=manual, pre_tokens=123456,
+  text=「上下文已压缩（手动，压缩前 123456 tokens）」）→ `compacting:false` → `final`。
+- `10.codebuddy_basic` 回归 PASS；turnlog 核对到 `role:"sys"` 压缩条目。
+- `npm run build:webui`（tsc + vite）通过，产物含「压缩中」。
+
+### 未覆盖
+
+- 真 CLI 的自动压缩未实弹（需把上下文撑满），仅按协议类型定义 + mock 校验；
+  真机首次触发时看 `cbc_compact` 日志与 WebUI 的 sys 行即可确认。
+- 手动压缩未做按钮：会话里发 `/compact` 即走 CLI 内置命令（未在桥内验证，理论可达）。
+- `system/mcp_status`、`task_*`、`topic`、`ai-title`、`result.modelUsage`/`_meta` 上下文用量
+  仍未消费，需要时再补。

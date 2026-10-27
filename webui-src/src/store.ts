@@ -18,6 +18,15 @@ export const PERM_OPTIONS: Record<Backend, [string, string][]> = {
 
 export const BACKEND_LETTER: Record<Backend, string> = { claude: "C", codex: "X", codebuddy: "B", openclaw: "O" };
 
+/** codebuddy --agent 内置 agent 模式（值来自服务端 backends.agents，这里是展示名） */
+export const AGENT_OPTIONS: [string, string][] = [
+  ["cli", "标准模式"],
+  ["ptc", "PTC 模式"],
+  ["minimal", "极简模式"],
+  ["create", "创造模式"],
+  ["multitask", "多任务模式"],
+];
+
 function emptyInfo(sid: string): SessionInfo {
   return {
     session_id: sid, alive: false, turn_active: false, channel: null, model: null,
@@ -196,7 +205,7 @@ class Store {
 
   createSession(fields: {
     session_id?: string; backend: Backend; channel?: string; model?: string;
-    permission_mode: string; gateway?: string; remote_key?: string;
+    permission_mode: string; agent_mode?: string; gateway?: string; remote_key?: string;
   }) {
     if (!this.api) return;
     const echo = this.api.newEcho();
@@ -206,6 +215,7 @@ class Store {
       session_id: sid, backend: fields.backend,
       channel: fields.channel || undefined, model: fields.model?.trim() || undefined,
       permission_mode: fields.permission_mode,
+      agent_mode: fields.agent_mode || undefined,
       gateway: fields.gateway?.trim() || undefined, remote_key: fields.remote_key?.trim() || undefined,
       echo,
     });
@@ -253,6 +263,10 @@ class Store {
 
   applyModel(sid: string, channel: string, model: string) {
     this.send("set_model", { session_id: sid, channel, model: model.trim() });
+  }
+
+  applyAgent(sid: string, agent: string) {
+    this.send("set_agent", { session_id: sid, mode: agent });
   }
 
   replyAsk(sid: string, askId: string, behavior: "allow" | "deny", message?: string, updatedInput?: unknown) {
@@ -359,6 +373,21 @@ class Store {
         break;
       }
       case "final": this.onFinal(f); break;
+      case "compact": {
+        const s = this.sess(f.session_id);
+        if (f.mid && this.seenOf(f.session_id).has(f.mid)) break;
+        if (f.mid) this.markSeen(f.session_id, f.mid);
+        s.info.compacting = false;
+        this.pushSys(s, f.text || "上下文已压缩");
+        this.touch();
+        break;
+      }
+      case "compacting": {
+        const s = this.sess(f.session_id);
+        s.info.compacting = !!f.compacting;
+        this.touch();
+        break;
+      }
       case "turn_aborted": this.onAborted(f); break;
       case "session_closed": {
         const s = this.sess(f.session_id);
@@ -402,6 +431,13 @@ class Store {
         this.touch();
         break;
       }
+      case "agent_ack": {
+        const s = this.sess(f.session_id);
+        s.info.agent_mode = f.agent || null;
+        this.toast("Agent 模式已切换：" + (AGENT_OPTIONS.find(([v]) => v === (f.agent || "ptc"))?.[1] || f.agent || "默认") + (f.applied ? "" : "（下次生效）"), "ok");
+        this.touch();
+        break;
+      }
       case "model_ack": {
         const s = this.sess(f.session_id);
         s.info.channel = f.channel || null;
@@ -419,6 +455,8 @@ class Store {
           gateways: (f.gateways || []).map((g: Frame) => ({
             name: g.name, url: g.url, agent: g.agent, token_tail: g.token_tail,
           })),
+          models: { codebuddy: (f.models && f.models.codebuddy) || [] },
+          agents: { codebuddy: (f.agents && f.agents.codebuddy) || [] },
         };
         this.touch();
         break;
@@ -501,8 +539,10 @@ class Store {
     Object.assign(s.info, {
       alive: true,
       turn_active: !!f.turn_active,
+      compacting: false,
       channel: f.channel || null,
       model: f.model || null,
+      agent_mode: f.agent_mode ?? s.info.agent_mode ?? null,
       backend: (f.backend || s.info.backend || "claude") as Backend,
       permission_mode: f.permission_mode || s.info.permission_mode || "default",
       queued: false,
@@ -586,6 +626,7 @@ class Store {
       if (f.text) s.msgs.push({ kind: "cc", text: f.text });
     }
     s.info.turn_active = false;
+    s.info.compacting = false;
     this.sealTools(s);
     if (f.is_error) this.pushSys(s, "⚠ 本轮错误结束");
     // 用量小字：时长 / tokens / 花费 / 轮数
@@ -604,6 +645,7 @@ class Store {
   private onAborted(f: Frame) {
     const s = this.sess(f.session_id);
     s.info.turn_active = false;
+    s.info.compacting = false;
     this.sealStreaming(s);
     this.sealTools(s);
     this.pushSys(s, "已中断：" + (f.reason || ""));

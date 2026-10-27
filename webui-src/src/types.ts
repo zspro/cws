@@ -28,6 +28,10 @@ export interface BackendsInfo {
   codebuddy_bin?: string;
   default_backend: Backend;
   gateways: Gateway[];
+  /** 官方服务模型表（服务端从 CLI 内省/静态快照得到；claude/codex 暂无来源） */
+  models?: { codebuddy?: string[] };
+  /** 内置 agent 模式表（--agent 取值；仅 codebuddy 提供） */
+  agents?: { codebuddy?: string[] };
 }
 
 /** send.images / user_msg.images：base64 裸数据（不带 data: 前缀） */
@@ -83,6 +87,10 @@ export interface SessionInfo {
   session_id: string;
   alive: boolean;
   turn_active?: boolean;
+  /** 后端正在压缩上下文（codebuddy system/status） */
+  compacting?: boolean;
+  /** agent 模式（codebuddy --agent；null = 未显式选择，后端默认 ptc） */
+  agent_mode?: string | null;
   created_at?: number;
   last_turn_at?: number;
   last_msg_ts?: number;

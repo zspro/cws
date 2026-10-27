@@ -257,11 +257,32 @@ async function scCodebuddyBasic() {
   c.close();
 }
 
+async function scCodebuddyCompact() {
+  const c = new Client(URL, TOKEN);
+  await c.connect();
+  const sid = 'acc-cbc-compact';
+  c.act('new_session', { session_id: sid, backend: 'codebuddy' });
+  let ev = await c.wait((x) => x.post_type === 'session_ready' && x.session_id === sid, 40);
+  if (!ev) { rec('11.codebuddy_compact', false, 'no session_ready'); c.close(); return; }
+  const e2 = c.act('send', { session_id: sid, text: '压缩一下上下文' });
+  const on = await c.wait((x) => x.post_type === 'compacting' && x.session_id === sid && x.compacting === true, 30);
+  const comp = await c.wait((x) => x.post_type === 'compact' && x.session_id === sid, 30);
+  const off = await c.wait((x) => x.post_type === 'compacting' && x.session_id === sid && x.compacting === false, 30);
+  ev = await c.wait((x) => (x.post_type === 'final' || x.post_type === 'error') && x.echo === e2, 60);
+  const ok = !!on && !!comp && !!off
+    && comp.trigger === 'manual' && comp.pre_tokens === 123456 && /上下文已压缩/.test(comp.text || '')
+    && !!ev && ev.post_type === 'final' && /压缩完成/.test(ev.text || '');
+  rec('11.codebuddy_compact', ok,
+    (comp ? 'compact=' + JSON.stringify(comp.text) : 'no compact frame') + ' final=' + JSON.stringify(ev && ev.text));
+  await dropAll(c, [sid]);
+  c.close();
+}
+
 const SCENARIOS = {
-  all: [scBasic, scParallel, scBashDeny, scAskq, scStopResume, scMisc, scCodexBasic, scCodexStop, scOpenclaw, scCodebuddyBasic],
+  all: [scBasic, scParallel, scBashDeny, scAskq, scStopResume, scMisc, scCodexBasic, scCodexStop, scOpenclaw, scCodebuddyBasic, scCodebuddyCompact],
   basic: [scBasic], parallel: [scParallel], bash_deny: [scBashDeny], askq: [scAskq],
   stop: [scStopResume], misc: [scMisc], codex_basic: [scCodexBasic], codex_stop: [scCodexStop],
-  openclaw: [scOpenclaw], codebuddy_basic: [scCodebuddyBasic],
+  openclaw: [scOpenclaw], codebuddy_basic: [scCodebuddyBasic], codebuddy_compact: [scCodebuddyCompact],
 };
 
 (async () => {

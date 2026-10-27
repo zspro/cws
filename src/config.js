@@ -81,7 +81,13 @@ export let CODEBUDDY_BIN = cfg.codebuddy_bin || 'codebuddy';
 export let DEFAULT_BACKEND = ['openclaw', 'codex', 'codebuddy', 'claude'].includes(cfg.default_backend) ? cfg.default_backend : 'claude';
 export const MAX_ACTIVE = Number(cfg.max_active_sessions ?? 3);
 export const QUEUE_MAX = Number(cfg.queue_max ?? 5);
+// 轮内空闲超时（不是整轮墙钟）：后端 stdout 持续有输出（delta/tool/thinking）就续期，
+// 连续 N 秒毫无动静才 abort。长任务只要在推进就不会被截断；<=0 关闭。
 export const TURN_TIMEOUT = Number(cfg.turn_timeout ?? 300);
+// 工具执行期的空闲预算：docker build/npm install/curl 等长工具可能数分钟不产生
+// 任何 stdout 事件（CLI 在工具执行期间不发 keepalive），300s 对话预算会误杀。
+// 模型恢复输出（正文/下一批工具）后回到 TURN_TIMEOUT。<=0 跟随 TURN_TIMEOUT。
+export const TOOL_IDLE_TIMEOUT = Number(cfg.tool_idle_timeout ?? 900);
 export const ASK_TIMEOUT = Number(cfg.ask_timeout ?? 120);
 export const MIN_TURN_INTERVAL = Number(cfg.min_turn_interval ?? 2);
 export const IDLE_TIMEOUT = Number(cfg.idle_timeout_s ?? 1800);

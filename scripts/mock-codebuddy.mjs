@@ -71,6 +71,15 @@ rl.on('line', async (line) => {
     resultFrame('工具调用被拒绝（headless 默认拒绝）');
     return;
   }
+  if (text.includes('压缩')) {
+    // 手动压缩序列（对齐 CLI 2.175 stream-json：status → compact_boundary → status）
+    out({ type: 'system', subtype: 'status', status: 'compacting', uuid: sid, session_id: sid });
+    await new Promise((r) => setTimeout(r, 50));
+    out({ type: 'system', subtype: 'compact_boundary', uuid: sid, session_id: sid, compact_metadata: { trigger: 'manual', pre_tokens: 123456 } });
+    out({ type: 'system', subtype: 'status', status: null, uuid: sid, session_id: sid });
+    resultFrame('压缩完成');
+    return;
+  }
   const m = text.match(/(\d+)\s*\+\s*(\d+)/);
   const n = m ? String(Number(m[1]) + Number(m[2])) : 'mock-codebuddy 收到：' + text.slice(0, 30);
   delta(n);

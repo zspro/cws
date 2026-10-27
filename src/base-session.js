@@ -2,14 +2,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  WORKSPACES, PERMISSION_MODE, DEFAULT_BACKEND, TURN_TIMEOUT, channelByName,
+  WORKSPACES, PERMISSION_MODE, DEFAULT_BACKEND, TURN_TIMEOUT, TOOL_IDLE_TIMEOUT, channelByName,
 } from './config.js';
 import { uuid5, UUID_NAMESPACE_URL, now, loadJsonFile, log } from './util.js';
 
 /** Frames broadcast to every authenticated connection (QQ multi-client model). */
 export const STREAM_POST_TYPES = new Set([
   'delta', 'thinking', 'tool_activity', 'final', 'cc_msg', 'user_msg',
-  'turn_aborted', 'ask', 'ask_replied', 'session_closed',
+  'turn_aborted', 'ask', 'ask_replied', 'session_closed', 'compact', 'compacting',
 ]);
 
 /** 发图清洗：最多 3 张、media_type 白名单、纯 base64（容忍 data: 前缀）、
@@ -62,6 +62,8 @@ export class BaseSession {
     }
     this.channel = channel;
     this.model_name = opts.model || (channel && channel.model) || meta.model || null;
+    // agent 模式（codebuddy --agent）：null = 未显式选择，由后端给默认值
+    this.agent_mode = opts.agentMode || meta.agent_mode || null;
     this.backend = opts.backend || meta.backend || DEFAULT_BACKEND;
     this.thread_id = meta.thread_id || null; // codex exec resume id
     // 会话备注（客户端手填）：跨设备共享的落点在 sess.json，不进 turnlog
@@ -191,6 +193,7 @@ export class BaseSession {
           permission_mode: this.launch_mode,
           channel: (this.channel && this.channel.name) || '',
           model: this.model_name || '',
+          agent_mode: this.agent_mode || '',
           backend: this.backend,
           thread_id: this.thread_id || '',
           remark: this.remark || '',
@@ -258,12 +261,43 @@ export class BaseSession {
   }
 
   // ---------- timers ----------
-  _armTurnTimer() {
+  // TURN_TIMEOUT 是「轮内空闲」预算，不是整轮墙钟：后端 stdout 每有输出就
+  // _touchTurnTimer() 续期，连续 N 秒毫无动静才算卡死。原先只在 startTurn 上
+  // 一次发条，长任务（构建/部署）干得正欢也会到点被 killpg 截断。
+  // _idle_budget 当前生效的空闲预算：对话期 = TURN_TIMEOUT，工具执行期切换到
+  // 更宽的 TOOL_IDLE_TIMEOUT（长工具静默数分钟是常态）。
+  _idle_budget = TURN_TIMEOUT;
+
+  _armTurnTimer(budget = this._idle_budget) {
     if (TURN_TIMEOUT <= 0) return; // <=0 = unlimited
     this._cancelTurnTimer();
+    this._turn_touch_at = Date.now();
     this.turn_timer = setTimeout(() => {
       this._turnTimeout().catch(() => {});
-    }, TURN_TIMEOUT * 1000);
+    }, budget * 1000);
+  }
+
+  /** 活动续期：节流 1s，避免流式输出每行都重建定时器。 */
+  _touchTurnTimer() {
+    if (!this.turn_active || TURN_TIMEOUT <= 0) return;
+    const t = Date.now();
+    if (this._turn_touch_at && t - this._turn_touch_at < 1000) return;
+    this._armTurnTimer();
+  }
+
+  /** 工具执行开始：切到工具空闲预算（tool_use 后直到模型再说话）。
+   *  docker/npm/curl 等长工具执行期间 CLI 不产任何 stdout 事件，
+   *  对话预算会误杀；<=0 时跟随 TURN_TIMEOUT。 */
+  _toolPhaseStart() {
+    this._idle_budget = TOOL_IDLE_TIMEOUT > 0 ? TOOL_IDLE_TIMEOUT : TURN_TIMEOUT;
+    if (this.turn_active) this._armTurnTimer();
+  }
+
+  /** 模型恢复输出（正文块 / delta）：回到对话空闲预算。 */
+  _toolPhaseEnd() {
+    if (this._idle_budget === TURN_TIMEOUT) return;
+    this._idle_budget = TURN_TIMEOUT;
+    if (this.turn_active) this._armTurnTimer();
   }
 
   _cancelTurnTimer() {
@@ -275,7 +309,7 @@ export class BaseSession {
 
   async _turnTimeout() {
     if (!this.turn_active) return;
-    log('turn_timeout', { session_id: this.id });
+    log('turn_timeout', { session_id: this.id, idle_s: this._idle_budget });
     await this.abort('timeout');
   }
 
@@ -353,6 +387,7 @@ export class BaseSession {
       if (imgs.length) uFrame.images = imgs;
       await this.sendWs(uFrame);
     }
+    this._idle_budget = TURN_TIMEOUT; // 上一轮可能死于工具期，预算先归位
     this._armTurnTimer();
     await this.bridge.turnGate();
     try {

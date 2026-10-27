@@ -128,9 +128,9 @@ channels.delete / channels.set_default / channel.test / channel.models`（均带
 
 桥→客户端 post_type：`session_ready / session_queued / send_ack / stop_ack /
 user_msg / cc_msg / delta / thinking / tool_activity / ask / ask_replied / final /
-turn_aborted / session_closed / history / sessions / sync_done / pong / error /
-channels / channels_saved / channels_deleted / channels_default / channel_test /
-channel_models / permission_ack / model_ack`。
+turn_aborted / session_closed / compact / compacting / history / sessions / sync_done /
+pong / error / channels / channels_saved / channels_deleted / channels_default /
+channel_test / channel_models / permission_ack / model_ack`。
 
 扩展字段：new_session 参数加 `backend: "claude"|"codex"|"codebuddy"|"openclaw"` 与
 `gateway`/`remote_key`/`agent`；session_ready / sessions.list 带 `backend`。旧客户端零改动。

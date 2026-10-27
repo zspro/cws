@@ -153,6 +153,7 @@ export class OpenclawSession extends BaseSession {
   }
 
   _handleEvent(ev) {
+    this._touchTurnTimer();
     const p = ev.payload || {};
     if (ev.event === 'chat') return this._handleChat(p);
     if (ev.event === 'agent') return this._handleAgent(p);

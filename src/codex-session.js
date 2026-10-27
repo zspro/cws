@@ -114,6 +114,7 @@ export class CodexSession extends BaseSession {
       } catch {
         return;
       }
+      this._touchTurnTimer();
       this._dispatch(obj).catch((e) => {
         log('codex_dispatch_err', { session_id: this.id, err: String(e) });
       });

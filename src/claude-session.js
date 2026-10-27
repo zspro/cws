@@ -187,6 +187,7 @@ export class ClaudeSession extends BaseSession {
       } catch {
         return;
       }
+      this._touchTurnTimer();
       this._dispatch(obj).catch((e) => {
         log('dispatch_err', { session_id: this.id, err: String(e) });
       });
@@ -230,6 +231,7 @@ export class ClaudeSession extends BaseSession {
       if (ev.type === 'content_block_delta') {
         const d = ev.delta || {};
         if (d.type === 'text_delta' && d.text) {
+          this._toolPhaseEnd();
           // 只广播不落 buf：同一轮 CLI 在 stream_event 之后还会发完整 assistant 帧
           // （text 块整段 push）。这里再 push 一次 = 同段文本双写，工具/ask 封口
           // _flushTextLog 时拼出"一句话连发两次"（v2 重写引入，v1 只在完整帧落 buf）。
@@ -247,9 +249,11 @@ export class ClaudeSession extends BaseSession {
       const blocks = (obj.message && obj.message.content) || [];
       for (const b of blocks) {
         if (b.type === 'text' && b.text) {
+          this._toolPhaseEnd();
           this.text_buf.push(b.text);
         } else if (b.type === 'tool_use') {
           this.last_activity = Date.now() / 1000;
+          this._toolPhaseStart();
           const sealed = this._flushTextLog();
           if (sealed) {
             await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
@@ -298,6 +302,7 @@ export class ClaudeSession extends BaseSession {
   async _handleResult(obj) {
     this.turn_active = false;
     this._cancelTurnTimer();
+    this._toolPhaseEnd();
     this.last_activity = Date.now() / 1000;
     const usage = obj.usage || {};
     const finalText = obj.result || this.text_buf.join('');

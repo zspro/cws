@@ -1,7 +1,7 @@
 // Panels.tsx —— 模态面板：新建会话 / 渠道管理 / 后端与网关 / 会话备注。
 // 布局沿用 kawork 的 overlay + panel 结构。
 import { useEffect, useState } from "react";
-import { PERM_OPTIONS, store, useStore } from "../store";
+import { AGENT_OPTIONS, PERM_OPTIONS, store, useStore } from "../store";
 import type { Backend, Channel } from "../types";
 import { IconX } from "../icons";
 
@@ -29,6 +29,7 @@ export function NewSessionPanel() {
   const [channel, setChannel] = useState("");
   const [model, setModel] = useState("");
   const [perm, setPerm] = useState("default");
+  const [agent, setAgent] = useState("ptc");
   const [gateway, setGateway] = useState(
     st.backends?.gateways[0]?.name || "openclaw");
   const [remote, setRemote] = useState("");
@@ -39,6 +40,7 @@ export function NewSessionPanel() {
   }, [backend]);
 
   const chans = store.channelsForBackend(backend);
+  const codebuddyModels = backend === "codebuddy" ? (st.backends?.models?.codebuddy || []) : [];
 
   return (
     <Shell title="新建会话" onClose={() => store.setModal(null)}>
@@ -73,7 +75,19 @@ export function NewSessionPanel() {
           </select>
         )}
       </label>
-      <label>模型（留空 = 渠道默认）<input value={model} onChange={(e) => setModel(e.target.value)} placeholder="如 glm-5.3-flash / openclaw/default" /></label>
+      <label>模型（留空 = 渠道默认）<input value={model} onChange={(e) => setModel(e.target.value)} list="codebuddy-models" placeholder={backend === "codebuddy" ? "选择或输入模型，如 glm-5.3-flash" : "如 glm-5.3-flash / openclaw/default"} /></label>
+      {backend === "codebuddy" && codebuddyModels.length > 0 && (
+        <datalist id="codebuddy-models">
+          {codebuddyModels.map((m) => <option key={m} value={m} />)}
+        </datalist>
+      )}
+      {backend === "codebuddy" && (
+        <label>Agent 模式
+          <select value={agent} onChange={(e) => setAgent(e.target.value)}>
+            {AGENT_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+      )}
       <label>权限
         <select value={perm} onChange={(e) => setPerm(e.target.value)}>
           {(PERM_OPTIONS[backend] || PERM_OPTIONS.claude).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -82,7 +96,7 @@ export function NewSessionPanel() {
       <div className="panel-actions">
         <button className="ghost" onClick={() => store.setModal(null)}>取消</button>
         <button className="primary" onClick={() => store.createSession({
-          session_id: sid, backend, channel, model, permission_mode: perm, gateway, remote_key: remote,
+          session_id: sid, backend, channel, model, permission_mode: perm, agent_mode: agent || undefined, gateway, remote_key: remote,
         })}>创建</button>
       </div>
     </Shell>
