@@ -39,6 +39,22 @@ export function briefOf(inputObj, limit = 80) {
   return s.length <= limit ? s : s.slice(0, limit) + '…';
 }
 
+/** 工具卡展开明细：REPL/Bash 直接给代码/命令，其余给完整输入 JSON；超长截断 */
+const DETAIL_CAP = 4000;
+export function detailOf(inputObj) {
+  let s;
+  if (inputObj && typeof inputObj === 'object' && typeof inputObj.code === 'string') s = inputObj.code;
+  else if (inputObj && typeof inputObj === 'object' && typeof inputObj.command === 'string') s = inputObj.command;
+  else {
+    try {
+      s = JSON.stringify(inputObj ?? {}, null, 1);
+    } catch {
+      s = String(inputObj);
+    }
+  }
+  return s.length > DETAIL_CAP ? s.slice(0, DETAIL_CAP) + '\n…（已截断）' : s;
+}
+
 /** External session ids: 1..64 chars of [A-Za-z0-9_-]. */
 export function isValidSid(sid) {
   return typeof sid === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(sid);

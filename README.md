@@ -99,9 +99,14 @@ final）→ cws delta/final；远程执行审批 → `session.approval` 事件 �
   事件 schema 与 claude stream-json 同构（system/init、stream_event、assistant、result）。
 - 首启用 `--session-id <uuid>` 固定会话身份；复活用 `--resume <id> --resume-create-missing`
   （transcript 被清理时同 id 重开，续轮不失败）。
-- **headless 无权限询问通道**（`--permission-prompt-tool stdio` 不支持）：default 档下
-  非白名单工具由 CLI 直接拒绝，无 claude 的 ask 卡片；全放行选 bypassPermissions
-  （自动追加 `-y`，并注入 `CODEBUDDY_IS_SANDBOX=1` 沙箱全放行）。
+- **权限/提问通道**（CLI ≥2.176 实测）：启动即发 `initialize` 控制请求声明
+  `capabilities.askUserQuestion`；default 档下非白名单工具触发
+  `control_request/can_use_tool` → ask 卡片（与 claude 同协议，载荷不同：
+  codebuddy 用 `{allowed,updatedInput}` / `{allowed:false,reason}`，不用 behavior）。
+  AskUserQuestion 在 `cli` agent 下走 kind=question 的提问卡片（allow 需带
+  `answers`）；`ptc`/`minimal` 下该工具经 REPL 沙箱代理，headless 中 CLI 内部
+  超时自动降级为文本提问。bypassPermissions 照旧全放行（自动追加 `-y`，并注入
+  `CODEBUDDY_IS_SANDBOX=1` 沙箱全放行）。
   权限/渠道切换 = 重启进程换参（支持运行中改，下一轮边界生效）。
 - 渠道协议须为 **openai**（SDK 在 base_url 后拼 `/chat/completions`，Bearer 鉴权）：
   base_url→`CODEBUDDY_BASE_URL`、api_key→`CODEBUDDY_API_KEY`、
@@ -128,7 +133,7 @@ channels.delete / channels.set_default / channel.test / channel.models`（均带
 
 桥→客户端 post_type：`session_ready / session_queued / send_ack / stop_ack /
 user_msg / cc_msg / delta / thinking / tool_activity / ask / ask_replied / final /
-turn_aborted / session_closed / compact / compacting / history / sessions / sync_done /
+turn_aborted / session_closed / compact / compacting / sys / history / sessions / sync_done /
 pong / error / channels / channels_saved / channels_deleted / channels_default /
 channel_test / channel_models / permission_ack / model_ack`。
 

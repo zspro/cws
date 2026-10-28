@@ -505,6 +505,22 @@ body {
   background: var(--warn);
   animation: blink 1.2s ease-in-out infinite;
 }
+/* 可展开工具卡：点击看完整输入/子代理正文；子代理卡弱化缩进 */
+.tool-line.expandable { cursor: pointer; }
+.tool-line .t-fold { flex-shrink: 0; font-size: 10px; color: var(--ink-faint); }
+.tool-line.sub { margin-left: 14px; border-left-style: dashed; opacity: .92; }
+.tool-line .t-detail {
+  flex-basis: 100%;
+  margin: 4px 0 2px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 260px; overflow-y: auto;
+  user-select: text;
+}
 
 .fold {
   display: flex; align-items: center; gap: 10px;

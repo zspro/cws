@@ -1,20 +1,25 @@
 // cc-bridge (Node) — CodebuddySession: resident `codebuddy -p` stream-json adapter.
-// Verified against @tencent-ai/codebuddy-code 2.170.0 (see ACCEPTANCE.md).
+// Verified against @tencent-ai/codebuddy-code 2.176.0 (see ACCEPTANCE.md).
 // 与 ClaudeSession 同构（常驻 stream-json 进程、事件同 schema），差异：
-//   1. 无 --permission-prompt-tool stdio：headless 不产 can_use_tool，无 ask 卡片；
-//      default 模式下非 allowlist 工具由 CLI 直接拒绝，全放行用 bypassPermissions。
+//   1. 权限/提问通道：CLI 2.176 headless 已支持 control_request/can_use_tool（实测），
+//      但 control_response 的 allow/deny 载荷与 claude 不同——codebuddy 要
+//      {allowed:true, updatedInput} / {allowed:false, reason}，不是 behavior 语义。
+//      AskUserQuestion 需要 start() 后先发 initialize 握手声明
+//      capabilities.askUserQuestion=true，且 allow 时 updatedInput 必须带 answers，
+//      否则 CLI 抛 "allowed AskUserQuestion without answers" 忽略。
 //   2. 频道经环境变量下发（CODEBUDDY_BASE_URL/CODEBUDDY_API_KEY，OpenAI 兼容协议，
 //      SDK 在 base_url 后拼 /chat/completions），改频道需重启进程。
 //   3. 权限切换走重启（不复用 set_permission_mode 控制请求）：bypassPermissions
 //      追加 -y 使 CODEBUDDY_IS_SANDBOX=1 的沙箱全放行生效。
 //   4. 复活用 --resume <sid> --resume-create-missing（历史被清时同 id 重开，不失败）；
 //      首启用 --session-id 固定会话 ID，init 事件回读落盘兜底。
+import crypto from 'node:crypto';
 import process from 'node:process';
 import readline from 'node:readline';
 import { BaseSession } from './base-session.js';
-import { CODEBUDDY_BIN, ALLOWED_TOOLS, PERMISSION_MODE, REAP_ON_DETACH } from './config.js';
+import { CODEBUDDY_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, REAP_ON_DETACH, CODEBUDDY_AUTOCOMPACT } from './config.js';
 import {
-  log, briefOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
+  log, briefOf, detailOf as _detailOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
 } from './util.js';
 
 function _procEnv(channel, cliUuid) {
@@ -95,6 +100,11 @@ export class CodebuddySession extends BaseSession {
     }
     if (this.model_name) args.push('--model', this.model_name);
     if (this.agent_mode) args.push('--agent', this.agent_mode);
+    // 超长会话防静默截断： nearing 阈值时 CLI 自动压缩（compact_boundary 事件
+    // 由 _onCompact 落盘广播）。'auto' 在自定义渠道下不触发，必须显式给阈值
+    if (CODEBUDDY_AUTOCOMPACT && CODEBUDDY_AUTOCOMPACT !== '0') {
+      args.push('--autocompact', CODEBUDDY_AUTOCOMPACT);
+    }
     if (useResume) {
       // --resume-create-missing：transcript 被 30 天清理/重装后同 id 重开，续轮不失败
       args.push('--resume', this.thread_id || this.cli_uuid, '--resume-create-missing');
@@ -126,6 +136,17 @@ export class CodebuddySession extends BaseSession {
       // 吞掉进程死后 stdin 的异步 EPIPE（Node 对 write 的 error 走异步事件）
       this.proc.stdin.on('error', () => {});
       this._startReader();
+      // SDK 握手：声明 askUserQuestion 能力，AskUserQuestion 工具才会进 headless
+      // 工具列表并走 can_use_tool 询问通道（实测 2.176：不声明则模型侧无此工具）
+      try {
+        await this._writeLine({
+          type: 'control_request',
+          request_id: 'init-' + crypto.randomBytes(4).toString('hex'),
+          request: { subtype: 'initialize', hooks: {}, capabilities: { askUserQuestion: true } },
+        });
+      } catch (e) {
+        log('cbc_handshake_err', { session_id: this.id, err: String(e) });
+      }
       log('cbc_proc_start', { session_id: this.id, pid: this.proc.pid, resume: this.resume_flag });
     } finally {
       release();
@@ -213,12 +234,34 @@ export class CodebuddySession extends BaseSession {
           reason: 'process_exited', echo: this.turn_echo,
         });
       }
+      await this._expireAllAsks();
       this.bridge.notifyCapacityChange();
     });
     this.readerTask = rl;
   }
 
   async _dispatch(obj) {
+    // 静默重发判定：init / control_response 是握手噪声，不算实质输出
+    if (obj.type !== 'control_response' && !(obj.type === 'system' && obj.subtype === 'init')) {
+      this._markTurnSeen();
+    }
+    // 子代理帧（parent_tool_use_id 非空）：转成「子代理」工具卡（可展开看明细），
+    // 但不进主对话流——正文不进 text_buf（final 不复读子代理）、delta 不广播、
+    // 不封口主 Agent 卡（sub:true）。turnlog 同步落盘（重连回放可见）。
+    if (obj.parent_tool_use_id) {
+      this._touchTurnTimer();
+      this.last_activity = Date.now() / 1000;
+      if (obj.type === 'assistant') {
+        for (const b of (obj.message && obj.message.content) || []) {
+          if (b.type === 'text' && b.text) {
+            await this._sendSubActivity('子代理', String(b.text).split('\n')[0], String(b.text));
+          } else if (b.type === 'tool_use') {
+            await this._sendSubActivity('子代理·' + b.name, briefOf(b.input || {}), _detailOf(b.input));
+          }
+        }
+      }
+      return;
+    }
     const t = obj.type;
     if (t === 'system') {
       if (obj.subtype === 'init') {
@@ -268,28 +311,130 @@ export class CodebuddySession extends BaseSession {
             await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
           }
           const brief = briefOf(b.input || {});
-          const tEntry = this._logTurn('tool', `${b.name}：${brief}`);
+          const detail = _detailOf(b.input);
+          const tEntry = this._logTurn('tool', `${b.name}：${brief}`, { detail });
           await this.sendWs({
             post_type: 'tool_activity', session_id: this.id,
-            tool: b.name, brief, mid: (tEntry || {}).id,
+            tool: b.name, brief, mid: (tEntry || {}).id, detail,
           });
         }
       }
+    } else if (t === 'control_response') {
+      // initialize 握手的 ack：也解除 ready 等待（system/init 未到时提前放行首写）
+      if (!this.ready.done) {
+        this.ready.done = true;
+        this.ready.resolve();
+      }
+      this.last_activity = Date.now() / 1000;
     } else if (t === 'control_request') {
-      // headless 无权限通道：rewind 等控制请求一律拒绝，保持协议应答闭环
-      try {
-        await this._writeLine({
-          type: 'control_response',
-          response: {
-            subtype: 'success', request_id: obj.request_id,
-            response: { behavior: 'deny', message: 'unsupported control request' },
-          },
-        });
-      } catch { /* process gone */ }
+      await this._handleControlRequest(obj);
     } else if (t === 'result') {
       await this._handleResult(obj);
     }
     // 'user' 帧（tool_result 回传）忽略
+  }
+
+  /** 子代理活动卡：turnlog 落盘 + 广播（sub:true，WebUI 不封口现有运行卡） */
+  async _sendSubActivity(name, brief, detail) {
+    brief = String(brief || '').slice(0, 120);
+    detail = String(detail || '').slice(0, 4008);
+    const entry = this._logTurn('tool', `${name}：${brief}`, { detail, sub: true });
+    await this.sendWs({
+      post_type: 'tool_activity', session_id: this.id,
+      tool: name, brief, mid: (entry || {}).id, detail, sub: true,
+    });
+  }
+
+  // ---------- permission / ask（can_use_tool，载荷与 claude 不同：allowed/updatedInput/reason） ----------
+  async _handleControlRequest(obj) {
+    const requestId = obj.request_id;
+    const req = obj.request || {};
+    if (req.subtype === 'can_use_tool') {
+      const sealed = this._flushTextLog();
+      if (sealed) {
+        await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
+      }
+      const toolName = req.tool_name;
+      const askId = crypto.randomBytes(16).toString('hex');
+      const kind = toolName === 'AskUserQuestion' ? 'question' : 'permission';
+      const askFrame = {
+        post_type: 'ask', session_id: this.id, ask_id: askId, kind,
+        tool_name: toolName, input: req.input || {},
+      };
+      // input 留档：allow 未带 updatedInput 时回填原 input（CLI 允许 updatedInput
+      // 缺省执行原参数，但回填更稳，且 AskUserQuestion 必须有 answers 才放行）
+      const entry = { request_id: requestId, tool_name: toolName, input: req.input || {}, ask_frame: askFrame };
+      entry.timer = setTimeout(() => { this._askTimeout(askId).catch(() => {}); }, ASK_TIMEOUT * 1000);
+      this.pending_asks.set(askId, entry);
+      this.last_activity = Date.now() / 1000;
+      await this.sendWs(askFrame);
+      log('cbc_ask', { session_id: this.id, tool: toolName, kind });
+    } else {
+      // rewind 等其他控制请求一律拒绝，保持协议应答闭环
+      try {
+        await this._writeLine({
+          type: 'control_response',
+          response: {
+            subtype: 'success', request_id: requestId,
+            response: { allowed: false, reason: 'unsupported control request' },
+          },
+        });
+      } catch { /* process gone */ }
+    }
+  }
+
+  async _askTimeout(askId) {
+    const entry = this.pending_asks.get(askId);
+    if (!entry) return;
+    this.pending_asks.delete(askId);
+    log('cbc_ask_timeout', { session_id: this.id, tool: (entry.ask_frame || {}).tool_name });
+    try {
+      await this._writeLine({
+        type: 'control_response',
+        response: {
+          subtype: 'success', request_id: entry.request_id,
+          response: { allowed: false, reason: 'ask timeout, denied by bridge' },
+        },
+      });
+    } catch { /* process gone */ }
+    await this.sendWs({
+      post_type: 'error', session_id: this.id, code: 'ask_timeout', ask_id: askId,
+    });
+  }
+
+  async askReply(askId, behavior, message = null, updatedInput = null, echo = null) {
+    const entry = this.pending_asks.get(askId);
+    if (!entry) {
+      await this.sendWs({
+        post_type: 'error', session_id: this.id, code: 'unknown_ask', ask_id: askId, echo,
+      });
+      return;
+    }
+    this.pending_asks.delete(askId);
+    if (entry.timer) clearTimeout(entry.timer);
+    let resp;
+    if (behavior === 'allow') {
+      resp = {
+        allowed: true,
+        updatedInput: updatedInput !== null && updatedInput !== undefined ? updatedInput : (entry.input || {}),
+      };
+    } else {
+      resp = { allowed: false, reason: message || 'denied by user' };
+    }
+    try {
+      await this._writeLine({
+        type: 'control_response',
+        response: { subtype: 'success', request_id: entry.request_id, response: resp },
+      });
+    } catch (e) {
+      await this.sendWs({
+        post_type: 'error', session_id: this.id, code: 'ask_reply_failed', message: String(e), echo,
+      });
+      return;
+    }
+    await this.sendWs({
+      post_type: 'ask_replied', session_id: this.id, ask_id: askId, behavior, echo,
+    });
   }
 
   // ---------- 上下文压缩（CLI 2.175+ 自动/手动压缩） ----------

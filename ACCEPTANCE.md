@@ -220,3 +220,90 @@ CLI 2.175 的 stream-json 协议里，压缩相关事件共三个（见
 - 手动压缩未做按钮：会话里发 `/compact` 即走 CLI 内置命令（未在桥内验证，理论可达）。
 - `system/mcp_status`、`task_*`、`topic`、`ai-title`、`result.modelUsage`/`_meta` 上下文用量
   仍未消费，需要时再补。
+
+## CodeBuddy can_use_tool / AskUserQuestion 适配（2026-10-28）
+
+CLI 2.176.0 实测推翻「headless 不产 can_use_tool」旧结论（2.170 时的行为）：
+
+- `control_request/{subtype:"can_use_tool"}` 已在 `-p --input-format stream-json`
+  下出现（非白名单工具、AskUserQuestion 都走它），无需 `--permission-prompt-tool`。
+- 载荷与 claude 不同：control_response 的 response 要
+  `{allowed:true, updatedInput}` / `{allowed:false, reason}`，不是 behavior 语义
+  （回 behavior 会被当成 deny，报 "Permission denied by SDK"）。
+- AskUserQuestion 须在启动后先发 `initialize` 控制请求声明
+  `request.capabilities.askUserQuestion=true`，否则 headless 工具列表里没有该工具；
+  allow 时 `updatedInput.answers`（键=问题文本）缺省会被 CLI 忽略并抛错。
+- `ptc`/`minimal` agent 下 AskUserQuestion 经 REPL 沙箱代理，headless 中 CLI 内部
+  超时自动降级为文本提问（CLI 侧限制）；`cli` agent 下直发，
+  can_use_tool(tool_name=AskUserQuestion) → 带 answers 的 allow → 正常闭环。
+
+### 实现
+
+- `src/codebuddy-session.js`：start() 后发 initialize 握手；
+  `_handleControlRequest` → ask 卡片（kind=question/permission，同 claude 帧格式）；
+  `_askTimeout`/`askReply` 用 codebuddy 载荷（allow 无 updatedInput 时回填原 input）；
+  reader close 时 `_expireAllAsks()`；control_response ack 亦解除 ready 等待。
+- `scripts/mock-codebuddy.mjs`：对齐 2.176（initialize ack + can_use_tool +
+  allowed 载荷；未声明能力时 AskUserQuestion 模拟文本降级）。
+- `wsclient.mjs`：新场景 `12.codebuddy_ask`（question 卡 → answers → final）。
+
+### 验收
+
+- mock 隔离服 :18645：`10.codebuddy_basic` / `11.codebuddy_compact` 回归 PASS，
+  `12.codebuddy_ask` PASS；另验 Bash 权限卡的 deny（`工具调用被拒绝：denied by user`）、
+  allow 无 updatedInput（回填原 input 放行）、不回复 20s 超时
+  （`ask timeout, denied by bridge`）三条路径均 PASS。
+- 真 CLI 2.176.0（隔离服 :18646，机器默认登录态）：
+  - default/ptc：Bash(REPL) 权限卡 allow+updatedInput → 执行成功，final「输出为：hello」；
+  - cli agent：AskUserQuestion question 卡 → allow+answers → final「你选择了喜欢狗」；
+  - ptc 下 REPL 内 AskUserQuestion 超时降级为文本（符合预期，CLI 限制）。
+
+### 未覆盖
+
+- QQ（onebot 插件）侧 ask 卡片渲染本就未实现，与后端无关。
+- `allow_always`（记住选择）未接；桥只有 allow/deny 两态，与 claude 后端一致。
+
+## 静默超时自动重发（2026-10-28）
+
+### 现象与根因
+
+`turn_timeout`（对话空闲预算 300s）仍在高频触发（10-28 一天 9 次），日志均
+`idle_s:300`。抽 `mvnmxifrvj` 14:12 的轮次对账：
+
+- 桥侧：`cbc_turn_start` 后 300s 整 `turn_timeout`，期间零 stdout；
+- CLI transcript（`~/.codebuddy/projects/<cwd>/<sid>.jsonl`）：该轮**一条记录都没有**
+  （连 user 消息都没落盘）→ 上游 API 请求挂死、首个 token 都没回来；
+- 同一文本 14:25 重发，167s 正常完成（24.3 万 out_tokens）。
+
+结论：空闲判定本身行为正确，卡的是渠道上游偶发挂起；缺的是挂死后的自愈。
+
+### 实现
+
+- `src/base-session.js`
+  - `_markTurnSeen()`：本轮见过实质输出；`_turn_seen` 在 `_writeTurn` 前清零。
+  - `_turnTimeout()`：整轮零输出且未重发过 → `turn_timeout_retry` 日志 +
+    `abort('timeout')` + 落一条 sys 流水「本轮 Ns 无任何响应（疑似上游挂起），已自动重发」
+    + 原样重发（`startTurn(..., {isRetry:true})`，`_turn_retries` 不清零，最多 1 次）。
+    有输出的卡死照旧只 abort，不重发（防工具副作用重复）。
+  - `STREAM_POST_TYPES` 增 `sys`（广播帧，带 mid 供前端去重）。
+- 各后端 `_dispatch` 按帧类型调 `_markTurnSeen()`：`init` / `control_response`
+  是握手噪声不算（实测 initialize ack 会晚于轮次开始到达，把 `_turn_seen` 污染成
+  true 导致重发不触发——首版踩过）；`keepalive` / `control_request`（权限卡）
+  算实质输出。
+- WebUI：`store.ts` 处理 `sys` 帧（sys 行，mid 去重）；README 帧列表补全。
+- `scripts/mock-codebuddy.mjs`：`沉默`（5s 全静默）与 `重试成功`（cwd 标记文件
+  跨进程记次，首次挂死、重发即成功）两条探针。
+
+### 验收（隔离服 :18647，turn_timeout=2）
+
+- 挂死一次 + 重发成功：`user_msg → turn_aborted → sys「已自动重发」→ user_msg →
+  delta → final:重试成功`，服务端日志 `turn_timeout_retry attempt:1` — PASS。
+- 两次都挂死：第二次超时不再重发（retries 上限），`turn_aborted ×2`、无 final — PASS。
+- 回归（:18648，正常配置）：`10.codebuddy_basic` / `11.codebuddy_compact` /
+  `12.codebuddy_ask` 全 PASS；tsc + vite 构建过。
+
+### 未覆盖
+
+- 渠道上游为什么挂死（deepseek-v4.1-flash 端点偶发无首 token）——桥侧只能自愈，
+  根因在渠道侧；若某渠道频繁触发，换渠道或在渠道侧加超时。
+- 重发仅 1 次；连续挂两次说明上游大面积故障，交给人工。

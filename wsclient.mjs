@@ -278,11 +278,38 @@ async function scCodebuddyCompact() {
   c.close();
 }
 
+async function scCodebuddyAsk() {
+  const c = new Client(URL, TOKEN);
+  await c.connect();
+  const sid = 'acc-cbc-ask';
+  c.act('new_session', { session_id: sid, backend: 'codebuddy' });
+  let ev = await c.wait((x) => x.post_type === 'session_ready' && x.session_id === sid, 40);
+  if (!ev) { rec('12.codebuddy_ask', false, 'no session_ready'); c.close(); return; }
+  let qAsk = null;
+  c.onAsk = async (aev) => {
+    if (aev.session_id === sid && aev.kind === 'question' && !qAsk) {
+      qAsk = aev;
+      const q = (aev.input.questions || [])[0];
+      const updatedInput = { ...aev.input, answers: { [q.question]: q.options[1].label } };
+      c.act('ask_reply', { session_id: sid, ask_id: aev.ask_id, behavior: 'allow', updatedInput });
+    }
+  };
+  const e2 = c.act('send', { session_id: sid, text: '问我最喜欢哪个颜色（选项红/蓝/绿），等我回答后告诉我我选的颜色' });
+  ev = await c.wait((x) => (x.post_type === 'final' || x.post_type === 'error') && x.echo === e2, 60);
+  const picked = qAsk ? ((qAsk.input.questions || [])[0] || {}).question : null;
+  const ok = !!qAsk && !!ev && ev.post_type === 'final' && /蓝/.test(ev.text || '');
+  rec('12.codebuddy_ask', ok,
+    'ask.tool=' + (qAsk && qAsk.tool_name) + ' q=' + JSON.stringify(picked) + ' final=' + JSON.stringify(ev && ev.text));
+  await dropAll(c, [sid]);
+  c.close();
+}
+
 const SCENARIOS = {
-  all: [scBasic, scParallel, scBashDeny, scAskq, scStopResume, scMisc, scCodexBasic, scCodexStop, scOpenclaw, scCodebuddyBasic, scCodebuddyCompact],
+  all: [scBasic, scParallel, scBashDeny, scAskq, scStopResume, scMisc, scCodexBasic, scCodexStop, scOpenclaw, scCodebuddyBasic, scCodebuddyCompact, scCodebuddyAsk],
   basic: [scBasic], parallel: [scParallel], bash_deny: [scBashDeny], askq: [scAskq],
   stop: [scStopResume], misc: [scMisc], codex_basic: [scCodexBasic], codex_stop: [scCodexStop],
   openclaw: [scOpenclaw], codebuddy_basic: [scCodebuddyBasic], codebuddy_compact: [scCodebuddyCompact],
+  codebuddy_ask: [scCodebuddyAsk],
 };
 
 (async () => {

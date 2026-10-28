@@ -388,6 +388,14 @@ class Store {
         this.touch();
         break;
       }
+      case "sys": {
+        const s = this.sess(f.session_id);
+        if (f.mid && this.seenOf(f.session_id).has(f.mid)) break;
+        if (f.mid) this.markSeen(f.session_id, f.mid);
+        this.pushSys(s, f.text || "");
+        this.touch();
+        break;
+      }
       case "turn_aborted": this.onAborted(f); break;
       case "session_closed": {
         const s = this.sess(f.session_id);
@@ -591,9 +599,12 @@ class Store {
   private onTool(f: Frame) {
     const s = this.sess(f.session_id);
     this.markSeen(f.session_id, f.mid);
-    this.sealStreaming(s);
-    this.sealTools(s);
-    s.msgs.push({ kind: "tool", mid: f.mid, text: `${f.tool}：${f.brief || ""}`, run: true });
+    // 子代理活动卡（sub:true）：不封口主流/现有运行卡（主 Agent 卡还在跑）
+    if (!f.sub) {
+      this.sealStreaming(s);
+      this.sealTools(s);
+    }
+    s.msgs.push({ kind: "tool", mid: f.mid, text: `${f.tool}：${f.brief || ""}`, run: !f.sub, detail: f.detail });
     this.touch();
   }
 
@@ -605,7 +616,7 @@ class Store {
       if (e.id) this.markSeen(f.session_id, e.id);
       if (e.role === "user") s.msgs.push({ kind: "user", mid: e.id, text: e.text });
       else if (e.role === "cc") s.msgs.push({ kind: "cc", mid: e.id, text: e.text });
-      else if (e.role === "tool") s.msgs.push({ kind: "tool", mid: e.id, text: e.text, run: false });
+      else if (e.role === "tool") s.msgs.push({ kind: "tool", mid: e.id, text: e.text, run: false, detail: (e as Frame).detail });
       else if (e.role === "sys") s.msgs.push({ kind: "sys", text: e.text });
     }
     if (f.last_mid) this.markSeen(f.session_id, f.last_mid);

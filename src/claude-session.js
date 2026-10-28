@@ -11,7 +11,7 @@ import {
   CLAUDE_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, REAP_ON_DETACH, channelByName,
 } from './config.js';
 import {
-  log, briefOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
+  log, briefOf, detailOf as _detailOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
 } from './util.js';
 
 function _procEnv(channel) {
@@ -210,6 +210,26 @@ export class ClaudeSession extends BaseSession {
   }
 
   async _dispatch(obj) {
+    // 静默重发判定：init / control_response 是握手噪声，不算实质输出
+    if (obj.type !== 'control_response' && !(obj.type === 'system' && obj.subtype === 'init')) {
+      this._markTurnSeen();
+    }
+    // 子代理帧（parent_tool_use_id 非空）：转「子代理」工具卡（同 codebuddy），
+    // 不进主对话流、不封口主 Agent 卡
+    if (obj.parent_tool_use_id) {
+      this._touchTurnTimer();
+      this.last_activity = Date.now() / 1000;
+      if (obj.type === 'assistant') {
+        for (const b of (obj.message && obj.message.content) || []) {
+          if (b.type === 'text' && b.text) {
+            await this._sendSubActivity('子代理', String(b.text).split('\n')[0], String(b.text));
+          } else if (b.type === 'tool_use') {
+            await this._sendSubActivity('子代理·' + b.name, briefOf(b.input || {}), _detailOf(b.input));
+          }
+        }
+      }
+      return;
+    }
     const t = obj.type;
     if (t === 'system') {
       if (obj.subtype === 'init') await this._announceReady(obj.model);
@@ -259,10 +279,11 @@ export class ClaudeSession extends BaseSession {
             await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
           }
           const brief = briefOf(b.input || {});
-          const tEntry = this._logTurn('tool', `${b.name}：${brief}`);
+          const detail = _detailOf(b.input);
+          const tEntry = this._logTurn('tool', `${b.name}：${brief}`, { detail });
           await this.sendWs({
             post_type: 'tool_activity', session_id: this.id,
-            tool: b.name, brief, mid: (tEntry || {}).id,
+            tool: b.name, brief, mid: (tEntry || {}).id, detail,
           });
         }
       }
@@ -272,6 +293,17 @@ export class ClaudeSession extends BaseSession {
       await this._handleResult(obj);
     }
     // 'user' frames (tool_result) are ignored
+  }
+
+  /** 子代理活动卡：turnlog 落盘 + 广播（sub:true，WebUI 不封口现有运行卡） */
+  async _sendSubActivity(name, brief, detail) {
+    brief = String(brief || '').slice(0, 120);
+    detail = String(detail || '').slice(0, 4008);
+    const entry = this._logTurn('tool', `${name}：${brief}`, { detail, sub: true });
+    await this.sendWs({
+      post_type: 'tool_activity', session_id: this.id,
+      tool: name, brief, mid: (entry || {}).id, detail, sub: true,
+    });
   }
 
   async _announceReady(model) {

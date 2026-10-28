@@ -134,6 +134,7 @@ export class CodexSession extends BaseSession {
   }
 
   async _dispatch(obj) {
+    this._markTurnSeen(); // codex 事件无握手噪声，一律算实质输出
     const t = obj.type;
     const item = obj.item || {};
     const itemType = item.type || item.item_type; // source uses "type"; older docs "item_type"

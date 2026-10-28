@@ -32,15 +32,22 @@ function ImageRow({ images }: { images?: { media_type: string; data: string }[] 
   );
 }
 
-/** 单行工具行：图标 + 名字 + 摘要截断；运行中亮警示边与呼吸点 */
+/** 单行工具行：图标 + 名字 + 摘要截断；运行中亮警示边与呼吸点；
+ *  带 detail（完整输入/子代理正文）时点击展开 */
 function ToolLine({ m }: { m: Extract<Msg, { kind: "tool" }> }) {
+  const [open, setOpen] = useState(false);
   const { name, brief } = splitTool(m.text);
   return (
-    <div className={"tool-line" + (m.run ? " running" : "")}>
+    <div
+      className={"tool-line" + (m.run ? " running" : "") + (m.detail ? " expandable" : "") + (m.sub ? " sub" : "")}
+      onClick={m.detail ? () => setOpen(!open) : undefined}
+    >
       <span className="t-ico"><ToolIcon name={name} /></span>
       <span className="t-name">{name}</span>
       {brief ? <span className="t-brief" title={brief}>{brief}</span> : null}
       {m.run ? <span className="t-run" /> : null}
+      {m.detail ? <span className="t-fold">{open ? "▾" : "▸"}</span> : null}
+      {open && m.detail ? <pre className="t-detail">{m.detail}</pre> : null}
     </div>
   );
 }

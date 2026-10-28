@@ -111,7 +111,7 @@ export interface SessionInfo {
 export type Msg =
   | { kind: "user"; mid?: string; text: string; images?: ImgAttachment[] }
   | { kind: "cc"; mid?: string; text: string }
-  | { kind: "tool"; mid?: string; text: string; run?: boolean }
+  | { kind: "tool"; mid?: string; text: string; run?: boolean; detail?: string; sub?: boolean }
   | { kind: "sys"; text: string }
   | { kind: "stat"; text: string }
   | { kind: "ask"; ask: AskFrame; answered: null | "allow" | "deny" };

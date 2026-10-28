@@ -114,6 +114,10 @@ export const PLUGINS = {};
 export const WS_RETENTION_S = Number(cfg.ws_retention_s ?? 7 * 86400);
 export const ALLOWED_TOOLS = cfg.allowed_tools || 'Read,Grep,Glob,AskUserQuestion';
 export const PERMISSION_MODE = cfg.permission_mode || 'default';
+// codebuddy 自动压缩阈值（--autocompact）：自定义渠道下 CLI 不知道模型窗口，
+// 'auto' 永不触发，transcript 超窗后上游静默截断开头（表现为"忘记早前约定"）。
+// 显式给 token 阈值（CLI 端 clamp 100k-1M）强制压缩；'auto' 透传；0/'' 关闭。
+export const CODEBUDDY_AUTOCOMPACT = String(cfg.codebuddy_autocompact ?? 150000);
 export const WEBUI_CFG = {
   enabled: (cfg.webui && cfg.webui.enabled) !== false,
   dir: (cfg.webui && cfg.webui.dir) || 'webui',

@@ -9,7 +9,7 @@ import { uuid5, UUID_NAMESPACE_URL, now, loadJsonFile, log } from './util.js';
 /** Frames broadcast to every authenticated connection (QQ multi-client model). */
 export const STREAM_POST_TYPES = new Set([
   'delta', 'thinking', 'tool_activity', 'final', 'cc_msg', 'user_msg',
-  'turn_aborted', 'ask', 'ask_replied', 'session_closed', 'compact', 'compacting',
+  'turn_aborted', 'ask', 'ask_replied', 'session_closed', 'compact', 'compacting', 'sys',
 ]);
 
 /** 发图清洗：最多 3 张、media_type 白名单、纯 base64（容忍 data: 前缀）、
@@ -95,10 +95,12 @@ export class BaseSession {
     return path.join(this.cwd, 'sess.json');
   }
 
-  _logTurn(role, text) {
+  _logTurn(role, text, extra = null) {
     if (!['user', 'cc', 'tool', 'sys'].includes(role)) return null;
     this._msg_seq += 1;
     const entry = { id: `${this.id}-${this._msg_seq}`, ts: now(), role, text };
+    // extra：附加字段（如工具卡的 detail/sub），随 entry 落盘与回放
+    if (extra && typeof extra === 'object') Object.assign(entry, extra);
     this.turn_log.push(entry);
     if (this.turn_log.length > this.TURN_LOG_MAX) {
       this.turn_log = this.turn_log.slice(-this.TURN_LOG_MAX);
@@ -285,6 +287,12 @@ export class BaseSession {
     this._armTurnTimer();
   }
 
+  /** 本轮见过实质输出（模型/工具/存活帧）。握手噪声（init、control_response）
+   *  不算——它们可能在上游挂死时照样到达。各后端在 _dispatch 里按帧类型调用。 */
+  _markTurnSeen() {
+    this._turn_seen = true;
+  }
+
   /** 工具执行开始：切到工具空闲预算（tool_use 后直到模型再说话）。
    *  docker/npm/curl 等长工具执行期间 CLI 不产任何 stdout 事件，
    *  对话预算会误杀；<=0 时跟随 TURN_TIMEOUT。 */
@@ -309,6 +317,20 @@ export class BaseSession {
 
   async _turnTimeout() {
     if (!this.turn_active) return;
+    // 整轮零输出 = 上游请求挂死（实测：CLI transcript 里连记录都不落，同消息
+    // 重发立刻成功）。abort 掉原样重发一次；有输出的卡死照旧只 abort。
+    if (!this._turn_seen && this._last_turn && (this._turn_retries || 0) < 1) {
+      this._turn_retries = (this._turn_retries || 0) + 1;
+      log('turn_timeout_retry', { session_id: this.id, attempt: this._turn_retries, idle_s: this._idle_budget });
+      const lt = this._last_turn;
+      await this.abort('timeout');
+      const entry = this._logTurn('sys', `本轮 ${this._idle_budget}s 无任何响应（疑似上游挂起），已自动重发`);
+      if (entry) {
+        await this.sendWs({ post_type: 'sys', session_id: this.id, mid: entry.id, text: entry.text });
+      }
+      await this.startTurn(lt.text, lt.echo, lt.images, { isRetry: true });
+      return;
+    }
     log('turn_timeout', { session_id: this.id, idle_s: this._idle_budget });
     await this.abort('timeout');
   }
@@ -355,7 +377,7 @@ export class BaseSession {
   async _askTimeout() { /* overridden by claude */ }
 
   // ---------- turn entry (backend-specific: startTurn/abort) ----------
-  async startTurn(text, echo, images) {
+  async startTurn(text, echo, images, opts = {}) {
     if (this.turn_active) {
       await this.sendWs({ post_type: 'error', session_id: this.id, code: 'busy', message: 'turn in progress', echo });
       return;
@@ -374,6 +396,9 @@ export class BaseSession {
     this.turn_active = true;
     this.aborted_sent = false;
     this.turn_echo = echo;
+    // 静默超时自动重发的状态：本轮已见到的输出行数 / 已重发次数
+    this._last_turn = { text, images: imgs, echo };
+    if (!opts.isRetry) this._turn_retries = 0;
     this.last_activity = now();
     this.last_turn_at = this.last_activity;
     // base64 不进 turnlog（爆盘 + 回放拉历史会淹 WS）：落盘/回显用占位文本，
@@ -390,6 +415,9 @@ export class BaseSession {
     this._idle_budget = TURN_TIMEOUT; // 上一轮可能死于工具期，预算先归位
     this._armTurnTimer();
     await this.bridge.turnGate();
+    // 输出水位清零点：_ensureProcess 期间的 init/握手指令不算本轮输出，
+    // 此后到 _writeTurn 前到达的任何 stdout 行才证明「上游活了」
+    this._turn_seen = false;
     try {
       await this._writeTurn(text, echo, imgs);
     } catch (e) {

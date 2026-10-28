@@ -154,6 +154,7 @@ export class OpenclawSession extends BaseSession {
 
   _handleEvent(ev) {
     this._touchTurnTimer();
+    this._markTurnSeen(); // openclaw 事件无握手噪声，一律算实质输出
     const p = ev.payload || {};
     if (ev.event === 'chat') return this._handleChat(p);
     if (ev.event === 'agent') return this._handleAgent(p);
