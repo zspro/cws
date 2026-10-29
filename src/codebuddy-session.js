@@ -17,13 +17,19 @@ import crypto from 'node:crypto';
 import process from 'node:process';
 import readline from 'node:readline';
 import { BaseSession } from './base-session.js';
-import { CODEBUDDY_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, REAP_ON_DETACH, CODEBUDDY_AUTOCOMPACT } from './config.js';
+import { CODEBUDDY_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, REAP_ON_DETACH, CODEBUDDY_AUTOCOMPACT, CODEBUDDY_REPL_NESTED_TIMEOUT_MS } from './config.js';
 import {
   log, briefOf, detailOf as _detailOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
 } from './util.js';
 
 function _procEnv(channel, cliUuid) {
   const env = { ...process.env, IS_SANDBOX: '1', CODEBUDDY_IS_SANDBOX: '1' };
+  // ptc/minimal 的嵌套审批（REPL 内 await AskUserQuestion/ExitPlanMode）在
+  // stream-json 下没有可达 UI，CLI 默认等 10 分钟（6e5ms）才报错。压短成
+  // 快速失败，模型会按 CLI 提示把问题写进回复正文（见 _REPL_ASK_GUIDANCE）。
+  if (CODEBUDDY_REPL_NESTED_TIMEOUT_MS > 0) {
+    env.CODEBUDDY_REPL_NESTED_TIMEOUT_MS = String(CODEBUDDY_REPL_NESTED_TIMEOUT_MS);
+  }
   if (channel !== null) {
     // 渠道接管端点与鉴权：清掉机器默认，避免默认渠道串台
     delete env.CODEBUDDY_BASE_URL;
@@ -48,6 +54,15 @@ function _procEnv(channel, cliUuid) {
 const CODEBUDDY_AGENTS = ['cli', 'ptc', 'minimal', 'create', 'multitask'];
 // 未显式选择时的默认 agent 模式（2026-10-27 起默认 PTC）
 const DEFAULT_AGENT = 'ptc';
+// CLI 的 ptc/minimal 系统提示要求 AskUserQuestion 只能写在 REPL 里调，但
+// stream-json 客户端没有嵌套审批 UI（实测真 CLI 2.175/2.176：合法参数挂死到
+// 嵌套超时，对话层又没有该工具的 catalog 项）→ 结构化问卡在 REPL 模式不可达。
+// 用追加系统提示把「问用户」引导到回复正文；REPL_NESTED_TIMEOUT_MS 兜底快速失败。
+const _REPL_ASK_GUIDANCE =
+  '【问用户的方式】本会话是无界面的 stream-json 客户端，REPL 内嵌的 AskUserQuestion / ' +
+  'ExitPlanMode 无法弹出审批界面。需要用户决策时：直接在回复正文里写出问题和各选项' +
+  '（A/B/C… 编号），结束本轮等用户回复；不要在 REPL 的 code 里调用 AskUserQuestion' +
+  '（会等待嵌套审批直到超时报错），也不要尝试在对话层直接调用（工具目录里没有它）。';
 
 export class CodebuddySession extends BaseSession {
   constructor(bridge, sid, ws, opts = {}) {
@@ -100,6 +115,11 @@ export class CodebuddySession extends BaseSession {
     }
     if (this.model_name) args.push('--model', this.model_name);
     if (this.agent_mode) args.push('--agent', this.agent_mode);
+    if (this.agent_mode === 'ptc' || this.agent_mode === 'minimal') {
+      // 压过 CLI「AskUserQuestion 只能在 REPL 里调」的内置提示（REPL 模式下
+      // 嵌套问卡在 stream-json 不可达，见 _REPL_ASK_GUIDANCE 注释）
+      args.push('--append-system-prompt', _REPL_ASK_GUIDANCE);
+    }
     // 超长会话防静默截断： nearing 阈值时 CLI 自动压缩（compact_boundary 事件
     // 由 _onCompact 落盘广播）。'auto' 在自定义渠道下不触发，必须显式给阈值
     if (CODEBUDDY_AUTOCOMPACT && CODEBUDDY_AUTOCOMPACT !== '0') {

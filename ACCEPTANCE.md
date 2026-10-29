@@ -307,3 +307,55 @@ CLI 2.176.0 实测推翻「headless 不产 can_use_tool」旧结论（2.170 时�
 - 渠道上游为什么挂死（deepseek-v4.1-flash 端点偶发无首 token）——桥侧只能自愈，
   根因在渠道侧；若某渠道频繁触发，换渠道或在渠道侧加超时。
 - 重发仅 1 次；连续挂两次说明上游大面积故障，交给人工。
+
+## ptc/minimal 模式「问用户」适配（2026-10-29）
+
+### 现象与根因（真 CLI 2.176 实测）
+
+ptc 会话里模型把 AskUserQuestion 写进 REPL code 调（transcript 实锤：
+`REPL：{"code":"const r = await AskUserQuestion({...})"}`），桥侧收不到任何
+ask 通道帧，用户侧无问卡；CLI 内部挂等到嵌套审批超时（生产观测 ~380s 后
+用户手动打字才继续）。
+
+逆向 CLI bundle + 实测确认三层：
+
+1. ptc/minimal 的对话层工具目录硬编码只有 REPL，AskUserQuestion 被归为
+   「REPL 内部协调工具」，CLI 系统提示明令「never at the conversation layer」
+   （即使 --append-system-prompt 让模型想直接调，catalog 里也没有该工具）；
+2. REPL 嵌套审批在 stream-json 客户端不可达：`shouldAvoidNestedUi` 只豁免
+   纯 --print 模式；无宿主 canUseTool 时走 `waitForNestedDecision`，
+   默认 10 分钟（`lY=6e5`）后报 lJ「approval UI may not be reachable from
+   this client」——CLI 作者留的唯一逃生门是 env
+   `CODEBUDDY_REPL_NESTED_TIMEOUT_MS`；
+3. 桥已声明的 initialize `capabilities.askUserQuestion`（7e6fa45）只对
+   cli 模式对话层 ask 有效（can_use_tool 通道），对 REPL 嵌套无影响。
+
+参数非法的嵌套调用会快速报错（validate 分支），合法参数才挂等——解释了
+为何偶发且难复现。
+
+### 实现
+
+- `src/config.js`：新增 `codebuddy_repl_nested_timeout_ms`（默认 15000）。
+- `src/codebuddy-session.js`
+  - `_procEnv` 注入 `CODEBUDDY_REPL_NESTED_TIMEOUT_MS`：模型执意嵌套时
+    15s 快速失败（实测 15.1s），CLI 错误文案自带恢复指引「put the question
+    in your reply instead」，模型下一跳即改写正文提问；
+  - ptc/minimal 启动参数追加 `--append-system-prompt`：引导模型需要用户
+    决策时直接在回复正文列 A/B/C 选项结束本轮，不在 REPL 内调 ask
+    （实测模型 100% 服从，轮次正常结束）。
+
+### 验收（真 CLI + mock 隔离服）
+
+- 引导生效：ptc + guidance → 模型正文提问「A 还是 B?」等回复，轮次 success，
+  零嵌套调用 — PASS。
+- 兜底生效：强令嵌套 → 15s 超时返回 lJ 错误，模型复述错误并承诺改正 — PASS。
+- 回归（:18649）：`10.basic` / `11.compact` / `12.ask` 全 PASS
+  （12 走 can_use_tool 直连通道，cli 模式不受影响）。
+- `_buildArgs` 单测：`--append-system-prompt` 存在、agent=ptc。
+
+### 未覆盖
+
+- 结构化问卡（kind=question）在 ptc 模式不可达是 CLI 架构限制，等 CLI
+  把嵌套审批接到 stream-json 控制通道后可撤掉 guidance；
+- ExitPlanMode 嵌套同样受益于短超时（同一 isProductInteractionTool 通道），
+  未单独实测。

@@ -118,6 +118,10 @@ export const PERMISSION_MODE = cfg.permission_mode || 'default';
 // 'auto' 永不触发，transcript 超窗后上游静默截断开头（表现为"忘记早前约定"）。
 // 显式给 token 阈值（CLI 端 clamp 100k-1M）强制压缩；'auto' 透传；0/'' 关闭。
 export const CODEBUDDY_AUTOCOMPACT = String(cfg.codebuddy_autocompact ?? 150000);
+// ptc/minimal 模式下 AskUserQuestion 只能嵌在 REPL 里调（CLI 系统提示强制），
+// 而 stream-json 客户端没有嵌套审批 UI，CLI 默认挂死 10 分钟（6e5ms）才放弃。
+// 桥侧把它压短，嵌套 ask 快速失败后模型会按 CLI 提示把问题写进回复正文。
+export const CODEBUDDY_REPL_NESTED_TIMEOUT_MS = Number(cfg.codebuddy_repl_nested_timeout_ms ?? 15000);
 export const WEBUI_CFG = {
   enabled: (cfg.webui && cfg.webui.enabled) !== false,
   dir: (cfg.webui && cfg.webui.dir) || 'webui',
