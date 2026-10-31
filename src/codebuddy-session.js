@@ -432,6 +432,19 @@ export class CodebuddySession extends BaseSession {
         } catch { /* process gone */ }
         return;
       }
+      // 自家 MCP 工具（cwsask: ask_user / share_file）不弹权限卡：本来就是宿主提供的
+      if (toolName && String(toolName).indexOf('cwsask') >= 0) {
+        try {
+          await this._writeLine({
+            type: 'control_response',
+            response: {
+              subtype: 'success', request_id: requestId,
+              response: { allowed: true, updatedInput: req.input || {} },
+            },
+          });
+        } catch { /* process gone */ }
+        return;
+      }
       // REPL 单元已进 --allowedTools，但单元格里调用 MCP 工具时 CLI 会再问一次权限。
       // 笔上没法审代码，这张「权限请求 · REPL」卡纯噪声 → 直接放行（只对 ptc/minimal）。
       if (toolName === 'REPL' && (this.agent_mode === 'ptc' || this.agent_mode === 'minimal')) {
