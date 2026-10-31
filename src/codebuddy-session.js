@@ -56,18 +56,105 @@ export const CODEBUDDY_AGENTS = ['cli', 'ptc', 'minimal', 'create', 'multitask']
 // --agent 是派生 teammate 的参数，主 CLI 静默忽略——早先传 --agent 等于没切模式。
 export const CODEBUDDY_TOOL_MODES = ['cli', 'ptc', 'minimal', 'create'];
 // 未显式选择时的默认 agent 模式（PTC：省 token 的 code-mode）。
-// 注：ptc 下 AskUserQuestion 只能写在 REPL 里，headless stream-json 没有嵌套审批宿主，
-// 问卡不可达（会 15s 超时并降级为正文提问）；需要结构化问卡请在界面里切标准模式。
+// 注：ptc 下 AskUserQuestion 只能写在 REPL 里，CLI 会走嵌套审批（headless 无宿主）；
+// 本适配层把 REPL 单元里的字面量问卡前移成真正的 ask 帧，抽不出字面量才当场拒绝
+// 并让模型改正文提问（详见下面 extractPtcAsk 一节）。
 export const DEFAULT_AGENT = 'ptc';
-// CLI 的 ptc/minimal 系统提示要求 AskUserQuestion 只能写在 REPL 里调，但
-// stream-json 客户端没有嵌套审批 UI（实测真 CLI 2.175/2.176：合法参数挂死到
-// 嵌套超时，对话层又没有该工具的 catalog 项）→ 结构化问卡在 REPL 模式不可达。
-// 用追加系统提示把「问用户」引导到回复正文；REPL_NESTED_TIMEOUT_MS 兜底快速失败。
+// 追加系统提示告诉模型两条可行路线：字面量直调（宿主转问卡）或正文提问。
+// REPL_NESTED_TIMEOUT_MS 仍保留作兜底（万一前移没覆盖到）。
 const _REPL_ASK_GUIDANCE =
-  '【问用户的方式】本会话是无界面的 stream-json 客户端，REPL 内嵌的 AskUserQuestion / ' +
-  'ExitPlanMode 无法弹出审批界面。需要用户决策时：直接在回复正文里写出问题和各选项' +
-  '（A/B/C… 编号），结束本轮等用户回复；不要在 REPL 的 code 里调用 AskUserQuestion' +
-  '（会等待嵌套审批直到超时报错），也不要尝试在对话层直接调用（工具目录里没有它）。';
+  '【问用户的方式】本会话是无界面的 stream-json 客户端，REPL 没有嵌套审批界面。需要用户' +
+  '决策时有两种写法：1) 在 REPL 单元里调用 AskUserQuestion，但 questions 数组必须直接写成' +
+  '字面量（不要先赋给变量再传），宿主会把它转成真正的问卡并把答案回填给你；2) 直接在回复' +
+  '正文里写出问题和各选项（A/B/C… 编号），结束本轮等用户回复。写成变量再传、或调用' +
+  'ExitPlanMode 会被当场拒绝（不要重试），此时改用第 2 种。';
+
+// ---------- PTC/minimal 的 REPL 内问卡：前移到笔端 ----------
+// CLI 里 REPL 内调用 AskUserQuestion 走嵌套审批（waitForPtcQuestion），宿主是交互 TUI；
+// headless stream-json 下 canUseTool 席位不可达 → 一直等（默认 6e5ms，我们压到 15s）。
+// 但 REPL 单元本身走 can_use_tool 询问通道，code 里就带着 questions 字面量——
+// 这里先把问卡发给笔端，拿到答案后把这次调用改写成直接返回 {questions, answers} 的
+// IIFE，CLI 执行时不再进嵌套审批（实测 2.179：改写成裸对象 await {...} 语法错，IIFE 才对）。
+// 抽不出字面量（先定义变量再传）就当场拒绝，别再耗 15s。
+const _PTC_ASK_CALL_RE = /AskUserQuestion\s*\(/;
+const _PTC_ASK_DENY =
+  '本会话无法在 REPL 里弹问卡：questions 必须直接写成字面量才能转交用户，' +
+  '写成变量或调用 ExitPlanMode 都不支持。请立刻把问题和选项写进回复正文并结束本轮，不要重试。';
+
+/** 单引号字符串转双引号（JSON.parse 只认双引号） */
+function _squashQuotes(src) {
+  const BS = String.fromCharCode(92);
+  const DQ = String.fromCharCode(34);
+  let out = '';
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== "'") { out += src[i]; continue; }
+    let buf = '';
+    i++;
+    while (i < src.length) {
+      const c = src[i];
+      if (c === BS) { buf += c + (src[i + 1] || ''); i += 2; continue; }
+      if (c === "'") break;
+      buf += c === DQ ? BS + DQ : c;
+      i++;
+    }
+    out += DQ + buf + DQ;
+  }
+  return out;
+}
+
+/** 去尾逗号 + 裸键补引号 + 单引号转双引号：把模型常写的 JS 字面量宽容成 JSON */
+function _lenientJson(src) {
+  let s = _squashQuotes(src);
+  s = s.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":');
+  s = s.replace(/,\s*([}\]])/g, '$1');
+  return s;
+}
+
+/** 从 open 处的 ( 配对到闭括号，跳过字符串内的括号；返回实参文本（失败 null） */
+function _callArgs(code, open) {
+  const BS = String.fromCharCode(92);
+  const BT = String.fromCharCode(96);
+  let depth = 0;
+  let quote = '';
+  for (let i = open; i < code.length; i++) {
+    const c = code[i];
+    if (quote) {
+      if (c === BS) { i++; continue; }
+      if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '"' || c === "'" || c === BT) { quote = c; continue; }
+    if (c === '(') { depth++; continue; }
+    if (c === ')') {
+      depth--;
+      if (!depth) return code.slice(open + 1, i);
+    }
+  }
+  return null;
+}
+
+/** 抽出 REPL code 里 AskUserQuestion 的字面量参数；抽不出返回 null */
+export function extractPtcAsk(code) {
+  if (typeof code !== 'string') return null;
+  const m = _PTC_ASK_CALL_RE.exec(code);
+  if (!m) return null;
+  const open = code.indexOf('(', m.index);
+  if (open < 0) return null;
+  const args = _callArgs(code, open);
+  if (args === null) return null;
+  let obj;
+  try { obj = JSON.parse(_lenientJson(args)); } catch { return null; }
+  const qs = obj && Array.isArray(obj.questions) ? obj.questions : null;
+  if (!qs || !qs.length) return null;
+  if (!qs.every((q) => q && typeof q.question === 'string')) return null;
+  return { at: m.index, questions: qs };
+}
+
+/** 把 AskUserQuestion({...}) 改写成 (async () => ({questions, answers}))(...) */
+export function rewritePtcAsk(code, at, questions, answers) {
+  const iife = '(async () => (' + JSON.stringify({ questions, answers }) + '))';
+  return code.slice(0, at) + iife + code.slice(at + 'AskUserQuestion'.length);
+}
 
 export class CodebuddySession extends BaseSession {
   constructor(bridge, sid, ws, opts = {}) {
@@ -382,15 +469,39 @@ export class CodebuddySession extends BaseSession {
         await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
       }
       const toolName = req.tool_name;
+      // REPL 单元里内联的 AskUserQuestion：前移成真正的问卡（见 extractPtcAsk）
+      const replCode = toolName === 'REPL' && req.input && typeof req.input.code === 'string'
+        ? req.input.code : '';
+      const ptcAsk = replCode ? extractPtcAsk(replCode) : null;
+      if (replCode && !ptcAsk && (/AskUserQuestion|ExitPlanMode/).test(replCode)) {
+        // 字面量抽不出来（先定义变量再传）或要确认计划：当场拒绝，别掉进 15s
+        // 嵌套超时再报错——实测那样模型会连着重试 3 次，白烧 50s+
+        log('cbc_ptc_ask_deny', { session_id: this.id });
+        try {
+          await this._writeLine({
+            type: 'control_response',
+            response: {
+              subtype: 'success', request_id: requestId,
+              response: { allowed: false, reason: _PTC_ASK_DENY },
+            },
+          });
+        } catch { /* process gone */ }
+        return;
+      }
       const askId = crypto.randomBytes(16).toString('hex');
-      const kind = toolName === 'AskUserQuestion' ? 'question' : 'permission';
+      const askTool = ptcAsk ? 'AskUserQuestion' : toolName;
+      const askInput = ptcAsk ? { questions: ptcAsk.questions } : (req.input || {});
+      const kind = askTool === 'AskUserQuestion' ? 'question' : 'permission';
       const askFrame = {
         post_type: 'ask', session_id: this.id, ask_id: askId, kind,
-        tool_name: toolName, input: req.input || {},
+        tool_name: askTool, input: askInput,
       };
       // input 留档：allow 未带 updatedInput 时回填原 input（CLI 允许 updatedInput
       // 缺省执行原参数，但回填更稳，且 AskUserQuestion 必须有 answers 才放行）
-      const entry = { request_id: requestId, tool_name: toolName, input: req.input || {}, ask_frame: askFrame };
+      const entry = {
+        request_id: requestId, tool_name: toolName, input: req.input || {}, ask_frame: askFrame,
+        ptc_repl: ptcAsk ? { code: replCode, at: ptcAsk.at, questions: ptcAsk.questions } : null,
+      };
       entry.timer = setTimeout(() => { this._askTimeout(askId).catch(() => {}); }, ASK_TIMEOUT * 1000);
       this.pending_asks.set(askId, entry);
       this.last_activity = Date.now() / 1000;
@@ -441,10 +552,22 @@ export class CodebuddySession extends BaseSession {
     if (entry.timer) clearTimeout(entry.timer);
     let resp;
     if (behavior === 'allow') {
-      resp = {
-        allowed: true,
-        updatedInput: updatedInput !== null && updatedInput !== undefined ? updatedInput : (entry.input || {}),
-      };
+      if (entry.ptc_repl) {
+        // REPL 内的问卡：把答案内联成 IIFE 返回，CLI 不再走嵌套审批
+        const answers = updatedInput && typeof updatedInput.answers === 'object' && updatedInput.answers
+          ? updatedInput.answers : {};
+        if (!Object.keys(answers).length) {
+          resp = { allowed: false, reason: _PTC_ASK_DENY };
+        } else {
+          const code = rewritePtcAsk(entry.ptc_repl.code, entry.ptc_repl.at, entry.ptc_repl.questions, answers);
+          resp = { allowed: true, updatedInput: { ...(entry.input || {}), code } };
+        }
+      } else {
+        resp = {
+          allowed: true,
+          updatedInput: updatedInput !== null && updatedInput !== undefined ? updatedInput : (entry.input || {}),
+        };
+      }
     } else {
       resp = { allowed: false, reason: message || 'denied by user' };
     }

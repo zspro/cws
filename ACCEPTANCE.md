@@ -498,3 +498,43 @@ CLI 2.179 的 commander 定义里 `--tool-mode <cli|ptc|minimal|create>` 才校�
 - 浏览器：新建 `codebuddy` 会话出现提示条 → 点顶栏终端图标 → `.term-box` 出现 →
   点回对话 → 聊天视图恢复、提示条回来，零 console 报错 — PASS。
 - 回归（mock :18711）：13 场景全 PASS。
+
+## PTC 模式 REPL 内问卡前移（2026-10-31，未部署）
+
+### 根因补全（真 CLI 2.179 逆向 + headless 实测）
+上一版结论「ptc/minimal 问卡不可达」只对了一半。REPL 单元**本身**是走
+`can_use_tool` 询问通道的，所以单元里那句 `AskUserQuestion({...})` 在控制帧里
+是**看得见的**：
+
+- CLI：`runReplProductInteraction` 先按 `shouldAvoidNestedUi` 判定（stream-json
+  输入时恒为 false，因为按理客户端能作答），再进 `waitForPtcQuestion`；那里取
+  `resolveCanUseTool(context)`——REPL 沙箱的 context 不在 `setSessionCanUseTool`
+  的 WeakMap 里、ALS 也没有当前 session，于是落回 `askService.beginPtcAsk` +
+  `enqueueSandboxApproval`（等交互 TUI 点审批）→ 只能等超时。这就是「桥侧全程
+  收不到 ask 帧」的原因。
+- 实测：改写前一次提问会连等 15s，模型再重试 2~3 次，单轮白烧 50s+。
+
+### 做法（`src/codebuddy-session.js`）
+1. `can_use_tool` 收到 `tool_name=REPL` 且 code 里有 `AskUserQuestion(...)` 时，
+   `extractPtcAsk()` 从 code 里抽出 questions 字面量（宽容化：裸键补引号、
+   去尾逗号、单引号转双引号，再 JSON.parse）。
+2. 抽出来了 → 发标准 `ask` 帧（`tool_name: AskUserQuestion`，与 cli 模式同一张卡）。
+   用户答复后 `askReply` 把这次调用改写成
+   `(async () => ({questions, answers}))(...)`，以 `allowed + updatedInput.code`
+   回给 CLI —— 单元格直接返回答案，**不再进嵌套审批**。
+   （改写不能是裸对象：`await {...}` 会 `Unexpected token '{'`，实测过。）
+3. 抽不出来（先 `const qs = [...]` 再传，或 `ExitPlanMode`）→ 当场 `allowed:false`
+   带指引文案，0s 失败，不再耗 15s；文案明确「不要重试，把问题写进正文」。
+4. `--append-system-prompt` 指引改成鼓励「把 questions 写成字面量直接调」，因为
+   现在这条路真能通；抽不出时才退回正文提问。
+5. 15s 嵌套超时（`CODEBUDDY_REPL_NESTED_TIMEOUT_MS`）保留作兜底。
+
+### 验收
+- 单元：`extractPtcAsk` 五种 code 形态（内联/单引号/变量/无调用/字符串含括号）
+  判定正确；`rewritePtcAsk` 产物 `new Function` 执行结果 = `{questions, answers}`。
+- 真 CLI 2.179 headless（stream-json + initialize 声明 askUserQuestion）：
+  内联调用被拦截 → 回填「方案B」→ 单元格返回
+  `{questions:[...], answers:{"请选择一个方案？":"方案B"}}`，模型据此继续 — PASS。
+- 变量形态：被当场拒绝，模型一次就改走正文提问（不再三连重试）— PASS。
+- 对照：`--disallowedTools AskUserQuestion` 也能消掉卡死（工具不在目录里，模型
+  直接正文提问，13.3s 收口），作为应急开关。
