@@ -117,6 +117,7 @@ function AskCard({ ask, answered, sid }: { ask: AskFrame; answered: null | "allo
                   <input
                     type={q.multiSelect ? "checkbox" : "radio"}
                     name={`askq-${ask.ask_id}-${qi}`}
+                    value={o.label}
                     disabled={!!answered}
                     onChange={(e) => {
                       const box = e.currentTarget;
