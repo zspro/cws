@@ -1,8 +1,9 @@
 // cc-bridge (Node) — BaseSession: shared state for claude/codex backends.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  WORKSPACES, PERMISSION_MODE, DEFAULT_BACKEND, TURN_TIMEOUT, TOOL_IDLE_TIMEOUT, channelByName,
+  WORKSPACES, PERMISSION_MODE, DEFAULT_BACKEND, TURN_TIMEOUT, TOOL_IDLE_TIMEOUT, ASK_TIMEOUT, channelByName,
 } from './config.js';
 import { uuid5, UUID_NAMESPACE_URL, now, loadJsonFile, log } from './util.js';
 
@@ -377,6 +378,40 @@ export class BaseSession {
     }
   }
   async _askTimeout() { /* overridden by claude */ }
+
+  // ---------- MCP 问卡（ptc/minimal 用 mcp.cwsask.ask_user 调用） ----------
+  // 走标准 ask 帧（笔/WebUI 还是同一张卡），但答复不回落给 CLI，而是 resolve 给
+  // MCP 子进程——工具返回值由 CLI 自己拼，模型看到的是正经 tool_result。
+  // 为什么不用「改写 REPL 代码塞答案」：CLI 会把 updatedInput 当成模型自己写的
+  // 入参存进 transcript，模型回头看见答案字面量会认定是自己伪造的，直接翻车。
+  askViaMcp(question, options, multiSelect = false) {
+    return new Promise((resolve) => {
+      const askId = crypto.randomBytes(16).toString('hex');
+      const labels = (Array.isArray(options) ? options : [])
+        .map((o) => (typeof o === 'string'
+          ? { label: String(o) }
+          : { label: String((o && o.label) || ''), description: o && o.description ? String(o.description) : '' }))
+        .filter((o) => o.label);
+      const questions = [{ question: String(question || ''), header: '', options: labels, multiSelect: !!multiSelect }];
+      const askFrame = {
+        post_type: 'ask', session_id: this.id, ask_id: askId, kind: 'question',
+        tool_name: 'AskUserQuestion', input: { questions },
+      };
+      const entry = {
+        request_id: null, tool_name: 'AskUserQuestion', input: askFrame.input,
+        ask_frame: askFrame, mcp: { resolve, question: questions[0].question },
+      };
+      entry.timer = setTimeout(() => {
+        if (this.pending_asks.get(askId) !== entry) return;
+        this.pending_asks.delete(askId);
+        resolve({ behavior: 'timeout' });
+      }, ASK_TIMEOUT * 1000);
+      this.pending_asks.set(askId, entry);
+      this.last_activity = Date.now() / 1000;
+      this.sendWs(askFrame).catch(() => {});
+      log('mcp_ask', { session_id: this.id, options: labels.length });
+    });
+  }
 
   // ---------- turn entry (backend-specific: startTurn/abort) ----------
   async startTurn(text, echo, images, opts = {}) {

@@ -15,9 +15,10 @@
 //      首启用 --session-id 固定会话 ID，init 事件回读落盘兜底。
 import crypto from 'node:crypto';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
 import { BaseSession } from './base-session.js';
-import { CODEBUDDY_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, REAP_ON_DETACH, CODEBUDDY_AUTOCOMPACT, CODEBUDDY_REPL_NESTED_TIMEOUT_MS } from './config.js';
+import { CODEBUDDY_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, REAP_ON_DETACH, CODEBUDDY_AUTOCOMPACT, CODEBUDDY_REPL_NESTED_TIMEOUT_MS, PORT } from './config.js';
 import {
   log, briefOf, detailOf as _detailOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
 } from './util.js';
@@ -57,112 +58,25 @@ export const CODEBUDDY_AGENTS = ['cli', 'ptc', 'minimal', 'create', 'multitask']
 export const CODEBUDDY_TOOL_MODES = ['cli', 'ptc', 'minimal', 'create'];
 // 未显式选择时的默认 agent 模式（PTC：省 token 的 code-mode）。
 // 注：ptc 下 AskUserQuestion 只能写在 REPL 里，CLI 会走嵌套审批（headless 无宿主）；
-// 本适配层把 REPL 单元里的字面量问卡前移成真正的 ask 帧，抽不出字面量才当场拒绝
-// 并让模型改正文提问（详见下面 extractPtcAsk 一节）。
+// 问卡改走 MCP 工具 mcp.cwsask.ask_user（src/mcp-ask.js）：在 REPL 里是普通工具调用，
+// 答案是真正的 tool_result，模型不会怀疑来源。直接调 AskUserQuestion 会被当场拒绝（0s），
+// 不再「改写代码塞答案」——CLI 会把 updatedInput 当成模型自己写的入参存进 transcript，
+// 模型回头看到答案字面量就认定是自己伪造的，实测整轮翻车。
 export const DEFAULT_AGENT = 'ptc';
-// 追加系统提示告诉模型两条可行路线：字面量直调（宿主转问卡）或正文提问。
-// REPL_NESTED_TIMEOUT_MS 仍保留作兜底（万一前移没覆盖到）。
+// 追加系统提示：需要用户决策时用 MCP 问卡工具（ptc/minimal 才挂），
+// 拿不到就问正文；不要用 REPL 里的 AskUserQuestion / ExitPlanMode。
+// REPL_NESTED_TIMEOUT_MS 保留作兜底（万一有漏网路径）。
 const _REPL_ASK_GUIDANCE =
-  '【问用户的方式】本会话是无界面的 stream-json 客户端，REPL 没有嵌套审批界面。需要用户' +
-  '决策时有两种写法：1) 在 REPL 单元里调用 AskUserQuestion，但 questions 数组必须直接写成' +
-  '字面量（不要先赋给变量再传），宿主会把它转成真正的问卡并把答案回填给你；2) 直接在回复' +
-  '正文里写出问题和各选项（A/B/C… 编号），结束本轮等用户回复。写成变量再传、或调用' +
-  'ExitPlanMode 会被当场拒绝（不要重试），此时改用第 2 种。';
+  '【问用户的方式】本会话是无界面的 stream-json 客户端。需要用户做选择时，' +
+  '调用 MCP 工具 ask_user（REPL 里写作 mcp.cwsask.ask_user({question, options})，' +
+  '工具全名 mcp__cwsask__ask_user），它会弹出真正的选项卡片并把用户的选择作为工具结果返回。' +
+  '不要调用 REPL 里的 AskUserQuestion 或 ExitPlanMode（没有嵌套审批宿主，会被直接拒绝）。' +
+  '如果 ask_user 不可用，就把问题和选项写进回复正文、结束本轮等用户回复。';
 
-// ---------- PTC/minimal 的 REPL 内问卡：前移到笔端 ----------
-// CLI 里 REPL 内调用 AskUserQuestion 走嵌套审批（waitForPtcQuestion），宿主是交互 TUI；
-// headless stream-json 下 canUseTool 席位不可达 → 一直等（默认 6e5ms，我们压到 15s）。
-// 但 REPL 单元本身走 can_use_tool 询问通道，code 里就带着 questions 字面量——
-// 这里先把问卡发给笔端，拿到答案后把这次调用改写成直接返回 {questions, answers} 的
-// IIFE，CLI 执行时不再进嵌套审批（实测 2.179：改写成裸对象 await {...} 语法错，IIFE 才对）。
-// 抽不出字面量（先定义变量再传）就当场拒绝，别再耗 15s。
-const _PTC_ASK_CALL_RE = /AskUserQuestion\s*\(/;
 const _PTC_ASK_DENY =
-  '本会话无法在 REPL 里弹问卡：questions 必须直接写成字面量才能转交用户，' +
-  '写成变量或调用 ExitPlanMode 都不支持。请立刻把问题和选项写进回复正文并结束本轮，不要重试。';
-
-/** 单引号字符串转双引号（JSON.parse 只认双引号） */
-function _squashQuotes(src) {
-  const BS = String.fromCharCode(92);
-  const DQ = String.fromCharCode(34);
-  let out = '';
-  for (let i = 0; i < src.length; i++) {
-    if (src[i] !== "'") { out += src[i]; continue; }
-    let buf = '';
-    i++;
-    while (i < src.length) {
-      const c = src[i];
-      if (c === BS) { buf += c + (src[i + 1] || ''); i += 2; continue; }
-      if (c === "'") break;
-      buf += c === DQ ? BS + DQ : c;
-      i++;
-    }
-    out += DQ + buf + DQ;
-  }
-  return out;
-}
-
-/** 去尾逗号 + 裸键补引号 + 单引号转双引号：把模型常写的 JS 字面量宽容成 JSON */
-function _lenientJson(src) {
-  let s = _squashQuotes(src);
-  s = s.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":');
-  s = s.replace(/,\s*([}\]])/g, '$1');
-  return s;
-}
-
-/** 从 open 处的 ( 配对到闭括号，跳过字符串内的括号；返回实参文本（失败 null） */
-function _callArgs(code, open) {
-  const BS = String.fromCharCode(92);
-  const BT = String.fromCharCode(96);
-  let depth = 0;
-  let quote = '';
-  for (let i = open; i < code.length; i++) {
-    const c = code[i];
-    if (quote) {
-      if (c === BS) { i++; continue; }
-      if (c === quote) quote = '';
-      continue;
-    }
-    if (c === '"' || c === "'" || c === BT) { quote = c; continue; }
-    if (c === '(') { depth++; continue; }
-    if (c === ')') {
-      depth--;
-      if (!depth) return code.slice(open + 1, i);
-    }
-  }
-  return null;
-}
-
-/** 抽出 REPL code 里 AskUserQuestion 的字面量参数；抽不出返回 null */
-export function extractPtcAsk(code) {
-  if (typeof code !== 'string') return null;
-  const m = _PTC_ASK_CALL_RE.exec(code);
-  if (!m) return null;
-  const open = code.indexOf('(', m.index);
-  if (open < 0) return null;
-  const args = _callArgs(code, open);
-  if (args === null) return null;
-  let obj;
-  try { obj = JSON.parse(_lenientJson(args)); } catch { return null; }
-  const qs = obj && Array.isArray(obj.questions) ? obj.questions : null;
-  if (!qs || !qs.length) return null;
-  if (!qs.every((q) => q && typeof q.question === 'string')) return null;
-  return { at: m.index, questions: qs };
-}
-
-/** 把 AskUserQuestion({...}) 改写成返回 {questions, answers} 的表达式 */
-// 注意两点（都是线上踩出来的）：
-// 1) 裸对象不行：await {...} 会被解析成块 → Unexpected token '{'，必须包一层 IIFE；
-// 2) 模型常常只写 `await AskUserQuestion({...})` 不写 return，单元格结果就丢了
-//    （REPL 不做末表达式返回）→ 前面挂个常量、末尾补一句 return 兜住。
-export function rewritePtcAsk(code, at, questions, answers) {
-  const payload = JSON.stringify({ questions, answers });
-  const iife = '(async () => __cwsPtcAsk)';
-  return 'const __cwsPtcAsk = ' + payload + ';' + String.fromCharCode(10)
-    + code.slice(0, at) + iife + code.slice(at + 'AskUserQuestion'.length) + String.fromCharCode(10)
-    + 'return __cwsPtcAsk;';
-}
-
+  '本会话不能这样问用户：REPL 里的 AskUserQuestion / ExitPlanMode 没有审批宿主，' +
+  '调用会一直挂着。请改用 MCP 工具 ask_user（REPL 里 mcp.cwsask.ask_user({question, options})），' +
+  '拿不到就立刻把问题写进回复正文并结束本轮，不要重试同一个调用。';
 export class CodebuddySession extends BaseSession {
   constructor(bridge, sid, ws, opts = {}) {
     super(bridge, sid, ws, opts);
@@ -193,6 +107,27 @@ export class CodebuddySession extends BaseSession {
     return { promise, resolve, done: false };
   }
 
+  /** --mcp-config：把自家 MCP 问卡服务挂进 CLI（密钥按进程随机，只走回环） */
+  _mcpAskConfig() {
+    const secret = this.bridge && this.bridge.mcpAskSecret;
+    if (!secret) return null;
+    let script;
+    try { script = fileURLToPath(new URL('./mcp-ask.js', import.meta.url)); } catch { return null; }
+    return JSON.stringify({
+      mcpServers: {
+        cwsask: {
+          command: process.execPath,
+          args: [script],
+          env: {
+            CWS_ASK_URL: 'http://127.0.0.1:' + PORT + '/mcp-ask',
+            CWS_ASK_SECRET: secret,
+            CWS_ASK_SESSION: this.id,
+          },
+        },
+      },
+    });
+  }
+
   _buildArgs() {
     const useResume = this.resume_flag || this.started_once;
     const args = [
@@ -206,7 +141,7 @@ export class CodebuddySession extends BaseSession {
       // ptc/minimal 的唯一直连工具是 REPL（其余走 REPL 沙箱内），
       // 不进 allowlist 的话 default 权限档下会被 CLI 直接拒绝
       '--allowedTools', (this.agent_mode === 'ptc' || this.agent_mode === 'minimal')
-        ? ALLOWED_TOOLS + ',REPL' : ALLOWED_TOOLS,
+        ? ALLOWED_TOOLS + ',REPL,mcp__cwsask__ask_user' : ALLOWED_TOOLS,
     ];
     if (this.launch_mode === 'bypassPermissions') {
       // -y = bypassPermissions；CODEBUDDY_IS_SANDBOX=1 全放行依赖 -y 存在
@@ -217,8 +152,10 @@ export class CodebuddySession extends BaseSession {
       args.push('--tool-mode', this.agent_mode);
     }
     if (this.agent_mode === 'ptc' || this.agent_mode === 'minimal') {
-      // 压过 CLI「AskUserQuestion 只能在 REPL 里调」的内置提示（REPL 模式下
-      // 嵌套问卡在 stream-json 不可达，见 _REPL_ASK_GUIDANCE 注释）
+      // REPL 里的 AskUserQuestion 走不通（嵌套审批无宿主）→ 挂自家 MCP 问卡工具，
+      // 并把「问用户就用它」写进系统提示（见 _REPL_ASK_GUIDANCE）
+      const mcpCfg = this._mcpAskConfig();
+      if (mcpCfg) args.push('--mcp-config', mcpCfg);
       args.push('--append-system-prompt', _REPL_ASK_GUIDANCE);
     }
     // 超长会话防静默截断： nearing 阈值时 CLI 自动压缩（compact_boundary 事件
@@ -476,13 +413,11 @@ export class CodebuddySession extends BaseSession {
         await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
       }
       const toolName = req.tool_name;
-      // REPL 单元里内联的 AskUserQuestion：前移成真正的问卡（见 extractPtcAsk）
+      // REPL 单元里调 AskUserQuestion/ExitPlanMode：CLI 会走嵌套审批，headless 没有宿主，
+      // 只能等 15s 超时（模型还会连着重试）。当场拒绝并指路 MCP 问卡，0s 失败。
       const replCode = toolName === 'REPL' && req.input && typeof req.input.code === 'string'
         ? req.input.code : '';
-      const ptcAsk = replCode ? extractPtcAsk(replCode) : null;
-      if (replCode && !ptcAsk && (/AskUserQuestion|ExitPlanMode/).test(replCode)) {
-        // 字面量抽不出来（先定义变量再传）或要确认计划：当场拒绝，别掉进 15s
-        // 嵌套超时再报错——实测那样模型会连着重试 3 次，白烧 50s+
+      if (replCode && (/AskUserQuestion|ExitPlanMode/).test(replCode)) {
         log('cbc_ptc_ask_deny', { session_id: this.id });
         try {
           await this._writeLine({
@@ -496,18 +431,15 @@ export class CodebuddySession extends BaseSession {
         return;
       }
       const askId = crypto.randomBytes(16).toString('hex');
-      const askTool = ptcAsk ? 'AskUserQuestion' : toolName;
-      const askInput = ptcAsk ? { questions: ptcAsk.questions } : (req.input || {});
-      const kind = askTool === 'AskUserQuestion' ? 'question' : 'permission';
+      const kind = toolName === 'AskUserQuestion' ? 'question' : 'permission';
       const askFrame = {
         post_type: 'ask', session_id: this.id, ask_id: askId, kind,
-        tool_name: askTool, input: askInput,
+        tool_name: toolName, input: req.input || {},
       };
       // input 留档：allow 未带 updatedInput 时回填原 input（CLI 允许 updatedInput
       // 缺省执行原参数，但回填更稳，且 AskUserQuestion 必须有 answers 才放行）
       const entry = {
         request_id: requestId, tool_name: toolName, input: req.input || {}, ask_frame: askFrame,
-        ptc_repl: ptcAsk ? { code: replCode, at: ptcAsk.at, questions: ptcAsk.questions } : null,
       };
       entry.timer = setTimeout(() => { this._askTimeout(askId).catch(() => {}); }, ASK_TIMEOUT * 1000);
       this.pending_asks.set(askId, entry);
@@ -532,6 +464,11 @@ export class CodebuddySession extends BaseSession {
     const entry = this.pending_asks.get(askId);
     if (!entry) return;
     this.pending_asks.delete(askId);
+    // MCP 问卡没有 CLI 侧的控制请求：只 resolve 超时，别写 control_response
+    if (entry.mcp) {
+      entry.mcp.resolve({ behavior: 'timeout' });
+      return;
+    }
     log('cbc_ask_timeout', { session_id: this.id, tool: (entry.ask_frame || {}).tool_name });
     try {
       await this._writeLine({
@@ -557,24 +494,31 @@ export class CodebuddySession extends BaseSession {
     }
     this.pending_asks.delete(askId);
     if (entry.timer) clearTimeout(entry.timer);
+    // MCP 问卡：不回落给 CLI，直接把用户选择 resolve 给 MCP 子进程（工具返回值）
+    if (entry.mcp) {
+      const answers = updatedInput && typeof updatedInput.answers === 'object' && updatedInput.answers
+        ? updatedInput.answers : {};
+      const q = entry.mcp.question || '';
+      const answer = behavior === 'allow'
+        ? (answers[q] !== undefined ? answers[q] : Object.values(answers)[0] || '')
+        : '';
+      entry.mcp.resolve({
+        behavior,
+        answer: Array.isArray(answer) ? answer.join(' / ') : String(answer || ''),
+        answers: behavior === 'allow' ? answers : undefined,
+      });
+      await this.sendWs({
+        post_type: 'ask_replied', session_id: this.id, ask_id: askId, behavior, echo,
+      });
+      log('mcp_ask_replied', { session_id: this.id, behavior });
+      return;
+    }
     let resp;
     if (behavior === 'allow') {
-      if (entry.ptc_repl) {
-        // REPL 内的问卡：把答案内联成 IIFE 返回，CLI 不再走嵌套审批
-        const answers = updatedInput && typeof updatedInput.answers === 'object' && updatedInput.answers
-          ? updatedInput.answers : {};
-        if (!Object.keys(answers).length) {
-          resp = { allowed: false, reason: _PTC_ASK_DENY };
-        } else {
-          const code = rewritePtcAsk(entry.ptc_repl.code, entry.ptc_repl.at, entry.ptc_repl.questions, answers);
-          resp = { allowed: true, updatedInput: { ...(entry.input || {}), code } };
-        }
-      } else {
-        resp = {
-          allowed: true,
-          updatedInput: updatedInput !== null && updatedInput !== undefined ? updatedInput : (entry.input || {}),
-        };
-      }
+      resp = {
+        allowed: true,
+        updatedInput: updatedInput !== null && updatedInput !== undefined ? updatedInput : (entry.input || {}),
+      };
     } else {
       resp = { allowed: false, reason: message || 'denied by user' };
     }

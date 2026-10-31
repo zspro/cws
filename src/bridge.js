@@ -129,6 +129,8 @@ export class Bridge {
     // 插件契约 v2：WS/HTTP 路径注册表（server.js 分发）+ 插件 shutdown 清单
     this.upgradeHandlers = new Map(); // 路径前缀 → (req, socket, head)，插件自理鉴权
     this.httpHandlers = [];           // 路径前缀 → (req, res)，先于静态服务命中
+    // MCP 问卡（src/mcp-ask.js → POST /mcp-ask）：密钥每进程随机，只走 127.0.0.1
+    this.mcpAskSecret = crypto.randomBytes(16).toString('hex');
     this.pluginShutdowns = [];        // 插件 shutdown()，桥关停时逆序调用
     this.kaxiPluginTools = new Map(); // 插件贡献给卡西的工具：name → {def, fn}——
     //  卡西（app/手表端 kx.chat 与 QQ 端 L5 共用）的工具表 = KX_TOOLS ∪ 本表
@@ -170,6 +172,45 @@ export class Bridge {
         log('plugin_load_err', { plugin: name, err: String(e) });
       }
     }
+  }
+
+  /**
+   * MCP 问卡的桥端入口（POST /mcp-ask，仅回环 + 随机密钥）。
+   * 收 {session_id, question, options, multiSelect} → 发标准 ask 帧 → 等用户答复
+   * → 把选择回给 MCP 子进程，由 CLI 作为 tool_result 交给模型。
+   */
+  async handleMcpAsk(req, res) {
+    const reply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      } catch { /* socket gone */ }
+    };
+    if (req.method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+    if (!safeEqual(String(req.headers['x-cws-ask'] || ''), this.mcpAskSecret)) {
+      return reply(403, { ok: false, error: 'forbidden' });
+    }
+    let raw = '';
+    try {
+      for await (const chunk of req) {
+        raw += chunk;
+        if (raw.length > 16384) return reply(413, { ok: false, error: 'too large' });
+      }
+    } catch {
+      return reply(400, { ok: false, error: 'bad body' });
+    }
+    let body;
+    try { body = JSON.parse(raw || '{}'); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+    const sid = String(body.session_id || '');
+    const question = String(body.question || '').slice(0, 2000);
+    const options = Array.isArray(body.options) ? body.options.slice(0, 8) : [];
+    if (!question || !options.length) return reply(400, { ok: false, error: 'question/options required' });
+    const sess = this.sessions.get(sid);
+    if (!sess || sess.closed) return reply(404, { ok: false, error: 'session_not_found' });
+    if (typeof sess.askViaMcp !== 'function') return reply(501, { ok: false, error: 'backend_unsupported' });
+    log('mcp_ask_in', { session_id: sid, options: options.length });
+    const out = await sess.askViaMcp(question, options, !!body.multiSelect);
+    try { reply(200, { ok: true, ...out }); } catch { /* socket gone */ }
   }
 
   /** 插件级一次性上下文（init 用，与命令级 ctx 区分）。track 用于 init 失败回滚。 */

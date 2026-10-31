@@ -90,6 +90,11 @@ const server = http.createServer((req, res) => {
     serveOcMedia(req, res, rawPath, query);
     return;
   }
+  // MCP 问卡的桥端入口（cws 自家 MCP 服务 → 这里 → ask 帧 → 前端）
+  if (rawPath === '/mcp-ask') {
+    bridge.handleMcpAsk(req, res);
+    return;
+  }
   // 插件 HTTP 路径注册表（契约 v2）：先于静态服务命中，前缀匹配交给插件
   for (const [prefix, handler] of bridge.httpHandlers) {
     if (rawPath === prefix || rawPath.startsWith(prefix)) {
