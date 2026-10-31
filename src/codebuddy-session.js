@@ -141,8 +141,8 @@ export class CodebuddySession extends BaseSession {
       // ptc/minimal 的唯一直连工具是 REPL（其余走 REPL 沙箱内），
       // 不进 allowlist 的话 default 权限档下会被 CLI 直接拒绝
       '--allowedTools', (this.agent_mode === 'ptc' || this.agent_mode === 'minimal')
-        ? ALLOWED_TOOLS + ',REPL,mcp__cwsask__ask_user,mcp__cwsask__send_file'
-        : ALLOWED_TOOLS + ',mcp__cwsask__ask_user,mcp__cwsask__send_file',
+        ? ALLOWED_TOOLS + ',REPL,mcp__cwsask__ask_user,mcp__cwsask__share_file'
+        : ALLOWED_TOOLS + ',mcp__cwsask__ask_user,mcp__cwsask__share_file',
     ];
     if (this.launch_mode === 'bypassPermissions') {
       // -y = bypassPermissions；CODEBUDDY_IS_SANDBOX=1 全放行依赖 -y 存在
