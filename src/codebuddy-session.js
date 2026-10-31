@@ -432,8 +432,14 @@ export class CodebuddySession extends BaseSession {
         } catch { /* process gone */ }
         return;
       }
-      // 自家 MCP 工具（cwsask: ask_user / share_file）不弹权限卡：本来就是宿主提供的
-      if (toolName && String(toolName).indexOf('cwsask') >= 0) {
+      // 宿主侧工具不弹权限卡：自家 MCP（cwsask: ask_user / share_file）+ CLI 的
+      // 工具检索/延迟执行中间层（ToolSearch / DeferExecuteTool）——它们只是去调
+      // 我们自己的工具，弹卡纯粹是噪声（实测用户得手点「允许」才能继续）
+      const hostTool = toolName && (
+        String(toolName).indexOf('cwsask') >= 0
+        || toolName === 'ToolSearch' || toolName === 'DeferExecuteTool'
+      );
+      if (hostTool) {
         try {
           await this._writeLine({
             type: 'control_response',
