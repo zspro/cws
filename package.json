@@ -16,6 +16,7 @@
   "dependencies": {
     "@openclaw/gateway-client": "^2026.9.4",
     "@openclaw/gateway-protocol": "^2026.9.4",
+    "node-pty": "^1.1.0",
     "ws": "^8.18.0"
   }
 }

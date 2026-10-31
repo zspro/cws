@@ -1,7 +1,7 @@
 // cws 桥协议（v0.2 + backend extensions）前端类型定义。
 // 帧形状以 src/bridge.js / src/base-session.js 为准。
 
-export type Backend = "claude" | "codex" | "codebuddy" | "openclaw";
+export type Backend = "claude" | "codex" | "codebuddy" | "codebuddy-tui" | "openclaw";
 
 export interface Channel {
   name: string;

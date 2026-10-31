@@ -7,6 +7,7 @@ import { BaseSession } from './base-session.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
 import { CodebuddySession } from './codebuddy-session.js';
+import { CodebuddyTuiSession } from './codebuddy-tui-session.js';
 import { OpenclawSession, OPENCLAW_PERMISSIONS } from './openclaw-session.js';
 import {
   TOKEN, ONE_TIME_TOKENS, WORKSPACES, MAX_ACTIVE, QUEUE_MAX, MIN_TURN_INTERVAL,
@@ -23,12 +24,14 @@ export function makeSession(bridge, sid, ws, opts = {}) {
   const backend = opts.backend || null;
   if (backend === 'codex') return new CodexSession(bridge, sid, ws, opts);
   if (backend === 'openclaw') return new OpenclawSession(bridge, sid, ws, opts);
+  if (backend === 'codebuddy-tui') return new CodebuddyTuiSession(bridge, sid, ws, opts);
   if (backend === 'codebuddy') return new CodebuddySession(bridge, sid, ws, opts);
   if (backend === 'claude') return new ClaudeSession(bridge, sid, ws, opts);
   // revive: read backend from sess.json meta
   const meta = loadSessMetaRaw(sid);
   if (meta.backend === 'codex') return new CodexSession(bridge, sid, ws, opts);
   if (meta.backend === 'openclaw') return new OpenclawSession(bridge, sid, ws, opts);
+  if (meta.backend === 'codebuddy-tui') return new CodebuddyTuiSession(bridge, sid, ws, opts);
   if (meta.backend === 'codebuddy') return new CodebuddySession(bridge, sid, ws, opts);
   return new ClaudeSession(bridge, sid, ws, opts);
 }
@@ -254,7 +257,11 @@ export class Bridge {
       this.sessions.set(sid, s);
       s.pending_echo = echo;
       try {
-        if (s.backend !== 'claude') {
+        if (s.backend === 'codebuddy-tui') {
+          await this._announceReady(s, echo);
+          s.pending_echo = null;
+          await s.start();
+        } else if (s.backend !== 'claude') {
           await this._announceReady(s, echo);
         } else {
           await s.start();
@@ -519,6 +526,33 @@ export class Bridge {
       case 'send':
         await this.onSend(ws, params, echo);
         break;
+      case 'term_input': {
+        const s = this.sessions.get(params.session_id);
+        if (!s || s.closed || typeof s.termInput !== 'function') {
+          await this._wsSend(ws, { post_type: 'error', code: 'unknown_session', session_id: params.session_id, echo });
+        } else {
+          s.termInput(params.data);
+        }
+        break;
+      }
+      case 'term_resize': {
+        const s = this.sessions.get(params.session_id);
+        if (s && !s.closed && typeof s.termResize === 'function') {
+          s.termResize(params.cols, params.rows);
+        }
+        break;
+      }
+      case 'term_attach': {
+        const s = this.sessions.get(params.session_id);
+        if (!s || s.closed || typeof s.termSnapshot !== 'function') {
+          await this._wsSend(ws, { post_type: 'error', code: 'unknown_session', session_id: params.session_id, echo });
+        } else {
+          s.termResize(params.cols, params.rows);
+          await s.start();
+          await s.termSnapshot();
+        }
+        break;
+      }
       case 'stop': {
         const s = this.sessions.get(params.session_id);
         if (!s || s.closed) {
@@ -714,8 +748,9 @@ export class Bridge {
     const agentMode = params.agent_mode ? String(params.agent_mode) : null;
     const backend = params.backend === 'codex' ? 'codex'
       : (params.backend === 'openclaw' ? 'openclaw'
-        : (params.backend === 'codebuddy' ? 'codebuddy'
-          : (params.backend === 'claude' ? 'claude' : null)));
+        : (params.backend === 'codebuddy-tui' ? 'codebuddy-tui'
+          : (params.backend === 'codebuddy' ? 'codebuddy'
+            : (params.backend === 'claude' ? 'claude' : null))));
     const existing = this.sessions.get(sid);
     if (existing && !existing.closed) {
       // same-name reconnect = takeover: rebind ws, resync identity, never restart
@@ -744,7 +779,7 @@ export class Bridge {
         changed = true;
         log('takeover_sync', { session_id: sid, permission_mode: wantMode, deferred: procAliveNow });
       }
-      if (agentMode !== null && existing.backend === 'codebuddy'
+      if (agentMode !== null && String(existing.backend || '').startsWith('codebuddy')
           && (existing.agent_mode || null) !== agentMode) {
         existing.agent_mode = agentMode;
         if (procAliveNow) {
@@ -791,7 +826,7 @@ export class Bridge {
         post_type: 'error', code: 'bad_backend_channel', channel: channel.name,
         message: (backend === 'codex'
           ? 'codex 后端不能使用 anthropic 协议渠道 ' + channel.name + '（glm/kimi），请选 openai 协议渠道或机器默认'
-          : backend === 'codebuddy'
+          : (backend === 'codebuddy' || backend === 'codebuddy-tui')
             ? 'codebuddy 后端不能使用 anthropic 协议渠道 ' + channel.name + '（glm/kimi），请选 openai 协议渠道或机器默认'
             : 'claude 后端不能使用 openai 协议渠道 ' + channel.name + '，请选 anthropic 协议渠道'),
         echo,
@@ -844,7 +879,13 @@ export class Bridge {
     this.sessions.set(sid, s);
     s.pending_echo = echo;
     try {
-      if (s.backend !== 'claude') {
+      if (s.backend === 'codebuddy-tui') {
+        // TUI 会先落一段启动横幅：先 announce 再拉进程，客户端收到 ready
+        // 后立刻 term_attach 就能拿到首屏
+        await this._announceReady(s, echo);
+        s.pending_echo = null;
+        await s.start();
+      } else if (s.backend !== 'claude') {
         await this._announceReady(s, echo);
         s.pending_echo = null;
       } else {
@@ -1645,7 +1686,7 @@ export class Bridge {
         };
       }
       case 'session_create': {
-        const backend = ['claude', 'codex', 'codebuddy', 'openclaw'].includes(a.backend) ? a.backend : null;
+        const backend = ['claude', 'codex', 'codebuddy', 'codebuddy-tui', 'openclaw'].includes(a.backend) ? a.backend : null;
         const sid = crypto.randomBytes(16).toString('hex');
         await this.newSession(ws, {
           session_id: sid, backend,
@@ -1820,7 +1861,7 @@ export class Bridge {
     if (!ch) return true;
     const proto = ch.protocol || 'auto';
     if (proto === 'auto' || backend === 'openclaw') return true;
-    if (backend === 'codex' || backend === 'codebuddy') return proto !== 'anthropic';
+    if (backend === 'codex' || backend === 'codebuddy' || backend === 'codebuddy-tui') return proto !== 'anthropic';
     if (backend === 'claude') return proto !== 'openai';
     return true;
   }
@@ -1862,7 +1903,7 @@ export class Bridge {
     if (!s || s.closed) {
       if (isValidSid(sid) && fs.existsSync(path.join(WORKSPACES, sid, 'turnlog.jsonl'))) {
         const meta = loadSessMetaRaw(sid);
-        if ((meta.backend || 'claude') === 'codebuddy') {
+        if (String(meta.backend || 'claude').startsWith('codebuddy')) {
           meta.agent_mode = mode || '';
           try {
             fs.writeFileSync(path.join(WORKSPACES, sid, 'sess.json'), JSON.stringify(meta));
@@ -1876,7 +1917,7 @@ export class Bridge {
       await this._wsSend(ws, { post_type: 'error', code: 'unknown_session', session_id: sid, echo });
       return;
     }
-    if (s.backend !== 'codebuddy') {
+    if (!String(s.backend || '').startsWith('codebuddy')) {
       await this._wsSend(ws, {
         post_type: 'error', code: 'unsupported_backend', session_id: sid,
         message: 'agent 模式仅 codebuddy 后端支持', echo,

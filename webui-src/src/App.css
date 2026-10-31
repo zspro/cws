@@ -902,3 +902,45 @@ body {
   .scroll { padding: 20px 16px 8px; }
   .composer-wrap { padding: 8px 14px 14px; }
 }
+
+/* ---------- TUI 终端（codebuddy-tui） ---------- */
+.term-wrap {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  padding: 12px 20px 16px;
+  gap: 8px;
+  position: relative;
+}
+.term-boot {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 12px; color: #6b7889; letter-spacing: .04em;
+  pointer-events: none;
+}
+.term-bar {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--sub);
+  flex-shrink: 0;
+}
+.term-tag {
+  font: 600 10.5px/1 var(--mono, ui-monospace, monospace);
+  letter-spacing: .08em;
+  color: #fff; background: var(--brand, #1f8a70);
+  border-radius: 4px; padding: 4px 6px;
+}
+.term-meta { color: var(--ink); }
+.term-hint { margin-left: auto; color: var(--ink-faint); }
+.term-box {
+  flex: 1; min-height: 0;
+  background: #12161c;
+  border-radius: 10px;
+  padding: 10px 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(20, 24, 30, .18), 0 8px 24px -12px rgba(20, 24, 30, .45);
+}
+.term-box .xterm { height: 100%; }
+.term-box .xterm-viewport { background: transparent !important; }
+@media (max-width: 720px) {
+  .term-wrap { padding: 8px 10px 10px; }
+  .term-hint { display: none; }
+}

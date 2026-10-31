@@ -40,7 +40,8 @@ export function NewSessionPanel() {
   }, [backend]);
 
   const chans = store.channelsForBackend(backend);
-  const codebuddyModels = backend === "codebuddy" ? (st.backends?.models?.codebuddy || []) : [];
+  const cb = backend === "codebuddy" || backend === "codebuddy-tui";
+  const codebuddyModels = cb ? (st.backends?.models?.codebuddy || []) : [];
 
   return (
     <Shell title="新建会话" onClose={() => store.setModal(null)}>
@@ -49,7 +50,8 @@ export function NewSessionPanel() {
         <select value={backend} onChange={(e) => setBackend(e.target.value as Backend)}>
           <option value="claude">claude CLI · 本地</option>
           <option value="codex">codex CLI · 本地</option>
-          <option value="codebuddy">codebuddy CLI · 本地</option>
+          <option value="codebuddy">codebuddy CLI · 本地（对话卡片）</option>
+          <option value="codebuddy-tui">codebuddy CLI · 本地（TUI 终端）</option>
           <option value="openclaw">openclaw · 远程 OpenClaw 网关</option>
         </select>
       </label>
@@ -75,13 +77,13 @@ export function NewSessionPanel() {
           </select>
         )}
       </label>
-      <label>模型（留空 = 渠道默认）<input value={model} onChange={(e) => setModel(e.target.value)} list="codebuddy-models" placeholder={backend === "codebuddy" ? "选择或输入模型，如 glm-5.3-flash" : "如 glm-5.3-flash / openclaw/default"} /></label>
-      {backend === "codebuddy" && codebuddyModels.length > 0 && (
+      <label>模型（留空 = 渠道默认）<input value={model} onChange={(e) => setModel(e.target.value)} list="codebuddy-models" placeholder={cb ? "选择或输入模型，如 glm-5.3-flash" : "如 glm-5.3-flash / openclaw/default"} /></label>
+      {cb && codebuddyModels.length > 0 && (
         <datalist id="codebuddy-models">
           {codebuddyModels.map((m) => <option key={m} value={m} />)}
         </datalist>
       )}
-      {backend === "codebuddy" && (
+      {cb && (
         <label>Agent 模式
           <select value={agent} onChange={(e) => setAgent(e.target.value)}>
             {AGENT_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}

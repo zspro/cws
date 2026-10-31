@@ -16,13 +16,14 @@ QQ 机器人、WebUI、任意客户端都能在线创建/接管会话、流式�
 - 验收：`node scripts/test-v03-auth.mjs`（12 项：新旧双路径/未鉴权门禁/一次性
   token 消费/静默超时断开）。
 
-## 四后端架构（一站式遥控台）
+## 五后端架构（一站式遥控台）
 
 | 后端 | 对象 | 方式 |
 |---|---|---|
 | `claude` | 本地 Claude Code CLI | spawn `claude -p` stream-json |
 | `codex` | 本地 Codex CLI | spawn `codex exec --json`（JSONL） |
 | `codebuddy` | 本地 CodeBuddy Code CLI（腾讯） | spawn `codebuddy -p` stream-json |
+| `codebuddy-tui` | 同上，但跑**交互式 TUI** | `node-pty` 真终端 + 浏览器 xterm.js 镜像 |
 | `openclaw` | **远程 OpenClaw 网关** | 官方 @openclaw/gateway-client（Gateway WS 协议 v4） |
 
 上游渠道（channels.json）只是 claude/codex 各自连的模型端点（glm/kimi/任意
@@ -109,11 +110,31 @@ final）→ cws delta/final；远程执行审批 → `session.approval` 事件 �
   用追加系统提示 + 15s 嵌套超时降级为正文提问；需要问卡请切标准模式（cli）。bypassPermissions 照旧全放行（自动追加 `-y`，并注入
   `CODEBUDDY_IS_SANDBOX=1` 沙箱全放行）。
   权限/渠道切换 = 重启进程换参（支持运行中改，下一轮边界生效）。
+- **agent 模式开关是 `--tool-mode <cli|ptc|minimal|create>`**。`--agent` 只对派生
+  teammate 生效，主 CLI 静默忽略——传 `--agent` 等于没切模式（2.179 实测）。
 - 渠道协议须为 **openai**（SDK 在 base_url 后拼 `/chat/completions`，Bearer 鉴权）：
   base_url→`CODEBUDDY_BASE_URL`、api_key→`CODEBUDDY_API_KEY`、
   http_headers→`CODEBUDDY_CUSTOM_HEADERS`（`{session_id}` 占位符可用）。
 - 权限档与 claude 同名：default / acceptEdits / plan / bypassPermissions。
 - 发图支持（user 消息 image content 块，协议与 claude 同构；真 CLI 待实弹复测）。
+
+## CodeBuddy TUI 后端（codebuddy-tui）
+
+headless 的 `codebuddy` 后端在 ptc/minimal 下够不着 REPL 嵌套审批（宿主是交互
+TUI，见 ACCEPTANCE.md）；`codebuddy-tui` 直接把真 TUI 跑在 PTY 里，浏览器用
+xterm.js 镜像同一块屏幕，键盘原样写回——问卡、权限框、斜杠命令全部照 TUI 原生
+工作，不依赖任何协议逆向。
+
+- 依赖 `node-pty`（可选原生模块，装不上只影响本后端，桥其余功能照常）。
+- 会话建立即预启动进程（打开页面就有画面），新目录首次运行的「信任文件夹？」
+  提问由桥自动回车选「Trust folder only」。
+- 输入：WebUI 底部输入框 → 文字写进 TUI 输入框 + 回车（等价手敲，会记入会话
+  标题）；中断 = Ctrl-C。终端面板里也能直接敲任何键（含斜杠命令）。
+- 换权限/agent 模式/渠道 = 重启 PTY，用 `--resume <id>` 续同一会话，客户端收到
+  `term_reset` 清屏后接新 `term_ready`。
+- 输出按 24ms 合帧广播，回放快照保留最近 200K 字符；进程退出发 `term_exit`，
+  下次输入自动重新拉起。
+- 发图不走该后端（TUI 没有图片入参），请在终端里用文件路径引用。
 
 ## WebUI
 
@@ -130,15 +151,23 @@ final）→ cws delta/final；远程执行审批 → `session.approval` 事件 �
 
 客户端→桥：`ping / new_session / sessions.sync / send / stop / drop_session /
 sessions.list / ask_reply / set_permission / set_model / channels.list / channels.save /
-channels.delete / channels.set_default / channel.test / channel.models`（均带 echo 回传）。
+channels.delete / channels.set_default / channel.test / channel.models /
+term_input / term_resize / term_attach`（均带 echo 回传）。
 
 桥→客户端 post_type：`session_ready / session_queued / send_ack / stop_ack /
 user_msg / cc_msg / delta / thinking / tool_activity / ask / ask_replied / final /
 turn_aborted / session_closed / compact / compacting / sys / history / sessions / sync_done /
 pong / error / channels / channels_saved / channels_deleted / channels_default /
-channel_test / channel_models / permission_ack / model_ack`。
+channel_test / channel_models / permission_ack / model_ack /
+term_ready / term_history / term_data / term_reset / term_exit`。
 
-扩展字段：new_session 参数加 `backend: "claude"|"codex"|"codebuddy"|"openclaw"` 与
+终端帧（仅 `codebuddy-tui`）：`term_input{data}` 原样键盘字节、`term_resize{cols,rows}`、
+`term_attach` 请求快照；下行 `term_ready{cols,rows,pid}`、`term_history{data}`、
+`term_data{data}`、`term_reset`（清屏）、`term_exit{code,signal}`。四类输出帧都在
+`STREAM_POST_TYPES` 里，多端连接同步镜像。
+
+扩展字段：new_session 参数加
+`backend: "claude"|"codex"|"codebuddy"|"codebuddy-tui"|"openclaw"` 与
 `gateway`/`remote_key`/`agent`；session_ready / sessions.list 带 `backend`。旧客户端零改动。
 
 ## 部署（systemd）

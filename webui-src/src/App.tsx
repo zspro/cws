@@ -10,6 +10,7 @@ import Composer from "./components/Composer";
 import Toasts from "./components/Toasts";
 import { BackendsPanel, ChannelsPanel, NewSessionPanel, RemarkPanel } from "./components/Panels";
 import KxView from "./components/KxView";
+import TermView from "./components/TermView";
 import UpdatePanel from "./components/UpdatePanel";
 
 function Splash({ out }: { out: boolean }) {
@@ -76,10 +77,14 @@ function Main() {
         {st.view === "kx" ? (
           <KxView />
         ) : st.current ? (
-          <>
-            <ChatView />
-            <Composer />
-          </>
+          st.sessions.get(st.current)?.info.backend === "codebuddy-tui" ? (
+            <TermView sid={st.current} />
+          ) : (
+            <>
+              <ChatView />
+              <Composer />
+            </>
+          )
         ) : (
           <div className="scroll">
             <div className="empty">

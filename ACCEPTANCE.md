@@ -407,3 +407,63 @@ CLI 二进制自身不设 `setSessionCanUseTool`（那是 SDK `query({canUseTool
 
 默认 agent 改回 `ptc`（用户要求）。`cli` 仍然可在界面手动选，问卡只在该模式下可用；
 `ptc` 走正文提问 + 15s 嵌套超时兜底。上一节记录的是两种模式的实测差异，保留作依据。
+
+## CodeBuddy TUI 后端（codebuddy-tui，2026-10-31）
+
+### 动机
+
+ptc/minimal 的 REPL 嵌套审批唯一宿主是**交互式 TUI**；headless stream-json 客户端
+天生够不着（见上一节）。与其继续逆向嵌套审批通道，不如把真 TUI 跑在 PTY 里：
+问卡、权限框、斜杠命令全部按 CLI 原生行为工作。
+
+### 实现
+
+- `src/codebuddy-tui-session.js`（新）：`node-pty` 起 `codebuddy`，原始字节流镜像到
+  WebUI，键盘原样写回，**不解析任何协议**。
+  - 输出 24ms 合帧（`FLUSH_MS`）避免碎块打满 WS；`scroll` 环形保留最近 200K 字符
+    供 `term_attach` 回放。
+  - 新目录首次运行的「Do you trust the files in this folder?」由桥自动回车选
+    第一项（Trust folder only）。
+  - `startTurn(text)` = 把文字写进输入框 + `\r`；`abort()` = `\x03`；回车前的行
+    记入 turnlog 作 `user`（会话标题、多端同步都不丢）。
+  - 进程未起来时键盘先攒在 `_queued`，spawn 完补写（否则首屏打头几个字会丢）。
+  - `setPermission/setAgent/setChannel` 一律重启 PTY（`--resume` 续同一会话），
+    下行 `term_reset` 清屏 + 新 `term_ready`。
+  - IPty 没有 ChildProcess 形状：补 `exitCode/signalCode = null` 后赋给 `this.proc`，
+    让 `procAlive/killProcGroup`/接管逻辑对 TUI 同样成立。
+- `src/bridge.js`：`new_session`/sess.json 复活支持 `codebuddy-tui`；新会话先
+  `_announceReady` 再预启动（打开页面即有画面）；新增 `term_input/term_resize/
+  term_attach` 三个动作。
+- `src/base-session.js`：`term_data/term_history/term_ready/term_reset/term_exit`
+  加入 `STREAM_POST_TYPES`（多端镜像必须广播）。
+- WebUI：`@xterm/xterm` + `addon-fit`，新增 `TermView.tsx`；终端字节走 per-sid
+  监听器注册表（`onTerm`）而不是 React state，避免每帧重渲染整棵树。
+- `package.json`：新增 `node-pty@1.1.0`（可选原生依赖，装不上只禁用本后端）。
+
+### 参数纠正：`--agent` → `--tool-mode`
+
+CLI 2.179 的 commander 定义里 `--tool-mode <cli|ptc|minimal|create>` 才校验模式，
+`--agent` 是派生 teammate 的参数，主 CLI 静默忽略。headless 与 TUI 两个后端都改成
+`--tool-mode`；`DEFAULT_AGENT` 仍为 `ptc`（用户要求，未动）。
+
+### 验收
+
+- **假 CLI 管道（/tmp/cws-tui-test，fake-tui.sh）**：`session_ready(backend=
+  codebuddy-tui, agent=ptc)` → `term_ready` → 信任提示自动回车 → `term_history`
+  回放 237 字符 → 逐字 `term_input` 往返 → Composer `send` 写入 TUI →
+  `sessions.list` 标题取自输入行 → `set_agent` 触发 `term_reset` + 新 `term_ready`
+  + `agent_ack{applied:true}` → `term_exit{code:0}` → 下次按键自动重生 — PASS。
+- **真 CLI（codebuddy 2.179，`--permission-mode default --tool-mode ptc`）**：WS 端
+  `term_data` 连续输出，`● 收到`、`✔ Worked for 12s` 正常渲染，会话 12s 完成 — PASS。
+- **浏览器（playwright + Chromium）**：新建 `codebuddy-tui` 会话 → 启动提示
+  「终端启动中…」覆盖黑屏，首帧到达即消失 → 完整 TUI（欢迎框、输入提示、
+  `● 收到`、`✔ Worked for 6s`）正常渲染 → 键盘与 Composer 输入都原样送达 →
+  零 console/page 报错。
+- **回归（mock 隔离服 :18711，`wsclient.mjs --scenario all`）**：13 场景全 PASS
+  （claude 基本/并行/拒绝/提问/中断 + codex + openclaw + codebuddy basic/compact/ask），
+  `--tool-mode` 改动未破坏既有链路。
+
+### 未覆盖
+
+- TUI 后端不发图（终端没有图片入参），走该后端时 `send` 带图会回 `no_image_support`；
+- Windows 未测（node-pty 平台二进制另装）。

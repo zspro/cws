@@ -10,6 +10,8 @@ import { uuid5, UUID_NAMESPACE_URL, now, loadJsonFile, log } from './util.js';
 export const STREAM_POST_TYPES = new Set([
   'delta', 'thinking', 'tool_activity', 'final', 'cc_msg', 'user_msg',
   'turn_aborted', 'ask', 'ask_replied', 'session_closed', 'compact', 'compacting', 'sys',
+  // TUI 终端后端：输出是原始字节流，多端镜像必须广播（term_reset/term_ready 同）
+  'term_data', 'term_reset', 'term_ready', 'term_exit',
 ]);
 
 /** 发图清洗：最多 3 张、media_type 白名单、纯 base64（容忍 data: 前缀）、

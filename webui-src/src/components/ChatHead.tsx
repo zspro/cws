@@ -11,7 +11,8 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
   const info = s?.info;
   const [model, setModel] = useState("");
   const [setOpen, setSetOpen] = useState(false);
-  const codebuddyModels = info?.backend === "codebuddy" ? (st.backends?.models?.codebuddy || []) : [];
+  const cb = info?.backend === "codebuddy" || info?.backend === "codebuddy-tui";
+  const codebuddyModels = cb ? (st.backends?.models?.codebuddy || []) : [];
 
   useEffect(() => { setModel(info?.model || ""); }, [st.current, info?.model]);
   useEffect(() => { if (inKx) setSetOpen(false); }, [inKx]);
@@ -90,7 +91,7 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                 {(PERM_OPTIONS[info.backend] || PERM_OPTIONS.claude).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
             </div>
-            {info.backend === "codebuddy" && (
+            {cb && (
               <div className="set-field">
                 <span className="set-label">Agent 模式</span>
                 <select
@@ -124,7 +125,7 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
               <div className="set-row">
                 <input
                   className="ctrl ch-model"
-                  placeholder={info.backend === "codebuddy" && codebuddyModels.length ? "选择或输入模型" : "模型"}
+                  placeholder={cb && codebuddyModels.length ? "选择或输入模型" : "模型"}
                   title={model || "模型"}
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
@@ -132,7 +133,7 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                   list="codebuddy-models-head"
                 />
                 <button className="ghost" onClick={() => store.applyModel(info.session_id, info.channel || "", model)}>应用</button>
-                {info.backend === "codebuddy" && codebuddyModels.length > 0 && (
+                {cb && codebuddyModels.length > 0 && (
                   <datalist id="codebuddy-models-head">
                     {codebuddyModels.map((m) => <option key={m} value={m} />)}
                   </datalist>

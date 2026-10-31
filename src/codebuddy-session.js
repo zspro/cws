@@ -22,7 +22,7 @@ import {
   log, briefOf, detailOf as _detailOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
 } from './util.js';
 
-function _procEnv(channel, cliUuid) {
+export function _procEnv(channel, cliUuid) {
   const env = { ...process.env, IS_SANDBOX: '1', CODEBUDDY_IS_SANDBOX: '1' };
   // ptc/minimal 的嵌套审批（REPL 内 await AskUserQuestion/ExitPlanMode）在
   // stream-json 下没有可达 UI，CLI 默认等 10 分钟（6e5ms）才报错。压短成
@@ -51,11 +51,14 @@ function _procEnv(channel, cliUuid) {
   return env;
 }
 
-const CODEBUDDY_AGENTS = ['cli', 'ptc', 'minimal', 'create', 'multitask'];
+export const CODEBUDDY_AGENTS = ['cli', 'ptc', 'minimal', 'create', 'multitask'];
+// CLI 真正认的开关是 --tool-mode（commander 校验的合法值只有这四个）；
+// --agent 是派生 teammate 的参数，主 CLI 静默忽略——早先传 --agent 等于没切模式。
+export const CODEBUDDY_TOOL_MODES = ['cli', 'ptc', 'minimal', 'create'];
 // 未显式选择时的默认 agent 模式（PTC：省 token 的 code-mode）。
 // 注：ptc 下 AskUserQuestion 只能写在 REPL 里，headless stream-json 没有嵌套审批宿主，
 // 问卡不可达（会 15s 超时并降级为正文提问）；需要结构化问卡请在界面里切标准模式。
-const DEFAULT_AGENT = 'ptc';
+export const DEFAULT_AGENT = 'ptc';
 // CLI 的 ptc/minimal 系统提示要求 AskUserQuestion 只能写在 REPL 里调，但
 // stream-json 客户端没有嵌套审批 UI（实测真 CLI 2.175/2.176：合法参数挂死到
 // 嵌套超时，对话层又没有该工具的 catalog 项）→ 结构化问卡在 REPL 模式不可达。
@@ -116,7 +119,9 @@ export class CodebuddySession extends BaseSession {
       args.push('-y');
     }
     if (this.model_name) args.push('--model', this.model_name);
-    if (this.agent_mode) args.push('--agent', this.agent_mode);
+    if (this.agent_mode && CODEBUDDY_TOOL_MODES.includes(this.agent_mode)) {
+      args.push('--tool-mode', this.agent_mode);
+    }
     if (this.agent_mode === 'ptc' || this.agent_mode === 'minimal') {
       // 压过 CLI「AskUserQuestion 只能在 REPL 里调」的内置提示（REPL 模式下
       // 嵌套问卡在 stream-json 不可达，见 _REPL_ASK_GUIDANCE 注释）

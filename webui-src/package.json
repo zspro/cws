@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "dompurify": "^3.2.6",
     "marked": "^15.0.7",
     "react": "^19.1.0",

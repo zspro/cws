@@ -13,10 +13,11 @@ export const PERM_OPTIONS: Record<Backend, [string, string][]> = {
   claude: [["default", "默认 · 按需询问"], ["acceptEdits", "接受编辑"], ["bypassPermissions", "完全允许"], ["plan", "只读规划"]],
   codex: [["read-only", "只读"], ["workspace-write", "工作区可写"], ["full-auto", "绕过审批与沙箱"], ["danger-full-access", "完全访问"]],
   codebuddy: [["default", "默认 · 按需询问"], ["acceptEdits", "接受编辑"], ["bypassPermissions", "完全允许"], ["plan", "只读规划"]],
+  "codebuddy-tui": [["default", "默认 · 按需询问"], ["acceptEdits", "接受编辑"], ["bypassPermissions", "完全允许"], ["plan", "只读规划"]],
   openclaw: [["read-only", "只读"], ["guarded", "守护"], ["workspace", "工作区"], ["full", "完全"]],
 };
 
-export const BACKEND_LETTER: Record<Backend, string> = { claude: "C", codex: "X", codebuddy: "B", openclaw: "O" };
+export const BACKEND_LETTER: Record<Backend, string> = { claude: "C", codex: "X", codebuddy: "B", "codebuddy-tui": "T", openclaw: "O" };
 
 /** codebuddy --agent 内置 agent 模式（值来自服务端 backends.agents，这里是展示名） */
 export const AGENT_OPTIONS: [string, string][] = [
@@ -113,7 +114,7 @@ class Store {
     return this.state.channels.filter((c) => {
       const p = c.protocol || "auto";
       if (p === "auto") return true;
-      if (backend === "codex" || backend === "codebuddy") return p !== "anthropic";
+      if (backend === "codex" || backend === "codebuddy" || backend === "codebuddy-tui") return p !== "anthropic";
       if (backend === "claude") return p !== "openai";
       return false;
     });
@@ -190,6 +191,16 @@ class Store {
       this.state.loginErr = "连接失败：Token 无效或服务不可达，将持续重试…";
     }
     this.touch();
+  }
+
+  // ---------- TUI 终端（codebuddy-tui 后端） ----------
+  /** 终端字节流走注册表而不是 state：每帧几百字节，进 React 状态会把整棵树刷爆。 */
+  termInput(sid: string, data: string) { this.send("term_input", { session_id: sid, data }); }
+  termResize(sid: string, cols: number, rows: number) {
+    this.send("term_resize", { session_id: sid, cols, rows });
+  }
+  termAttach(sid: string, cols: number, rows: number) {
+    this.send("term_attach", { session_id: sid, cols, rows });
   }
 
   // ---------- 会话动作 ----------
@@ -386,6 +397,15 @@ class Store {
         const s = this.sess(f.session_id);
         s.info.compacting = !!f.compacting;
         this.touch();
+        break;
+      }
+      case "term_data":
+      case "term_history":
+      case "term_reset":
+      case "term_ready":
+      case "term_exit": {
+        const kind = f.post_type.slice(5) as TermEvent["kind"];
+        emitTerm(f.session_id, { kind, data: f.data, cols: f.cols, rows: f.rows, code: f.code });
         break;
       }
       case "sys": {
@@ -703,4 +723,30 @@ export const store = new Store();
 
 export function useStore(): AppState {
   return useSyncExternalStore(store.subscribe, store.getSnapshot);
+}
+
+
+// ---------- TUI 终端事件总线 ----------
+// xterm 实例只关心自己 sid 的字节流；用注册表直送，不进 React 状态树。
+export interface TermEvent {
+  kind: "data" | "history" | "reset" | "ready" | "exit";
+  data?: string;
+  cols?: number;
+  rows?: number;
+  code?: number;
+}
+
+type TermListener = (ev: TermEvent) => void;
+const termListeners = new Map<string, Set<TermListener>>();
+
+export function onTerm(sid: string, fn: TermListener): () => void {
+  let set = termListeners.get(sid);
+  if (!set) { set = new Set(); termListeners.set(sid, set); }
+  set.add(fn);
+  return () => { set!.delete(fn); if (!set!.size) termListeners.delete(sid); };
+}
+
+function emitTerm(sid: string, ev: TermEvent) {
+  const set = termListeners.get(sid);
+  if (set) set.forEach((fn) => fn(ev));
 }
