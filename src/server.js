@@ -76,6 +76,35 @@ function serveStatic(req, res) {
   });
 }
 
+// 共享文件：workspaces/<sid>/shared/<file>，token 走 query（浏览器直接点链接）
+const SHARED_MIME = {
+  '.md': 'text/markdown; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
+  '.json': 'application/json', '.csv': 'text/csv; charset=utf-8',
+  '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.zip': 'application/zip', '.html': 'text/html; charset=utf-8',
+};
+function serveSharedFile(req, res, rawPath) {
+  const url = new URL(req.url || '/', 'http://bridge.local');
+  const t = url.searchParams.get('t') || '';
+  if (!t || !safeEqual(t, TOKEN)) { res.writeHead(403).end('forbidden'); return; }
+  const m = rawPath.match(/^\/f\/([A-Za-z0-9_-]{1,64})\/([^/]{1,200})$/);
+  if (!m) { res.writeHead(404).end('not found'); return; }
+  const sid = m[1];
+  const name = decodeURIComponent(m[2]);
+  if (!isValidSid(sid) || name.indexOf('..') >= 0 || name.indexOf('/') >= 0) {
+    res.writeHead(403).end('forbidden'); return;
+  }
+  const filePath = path.join(BASE, 'workspaces', sid, 'shared', name);
+  if (!fs.existsSync(filePath)) { res.writeHead(404).end('not found'); return; }
+  const stat = fs.statSync(filePath);
+  res.writeHead(200, {
+    'content-type': SHARED_MIME[path.extname(name).toLowerCase()] || 'application/octet-stream',
+    'content-length': stat.size,
+    'content-disposition': 'attachment; filename*=UTF-8\'\' ' + encodeURIComponent(name.replace(/^[0-9a-f]{12}-/, '')),
+  });
+  fs.createReadStream(filePath).pipe(res);
+}
+
 const server = http.createServer((req, res) => {
   // access log: never log query strings (tokens live there)
   let rawPath = (req.url || '/').split('?')[0];
@@ -90,6 +119,11 @@ const server = http.createServer((req, res) => {
     serveOcMedia(req, res, rawPath, query);
     return;
   }
+  // 共享文件下载：/f/<sid>/<file>?t=<token>（AI 用 MCP share_file 生成链接）
+  if (rawPath.startsWith('/f/')) {
+    serveSharedFile(req, res, rawPath);
+    return;
+  }
   // MCP 问卡的桥端入口（cws 自家 MCP 服务 → 这里 → ask 帧 → 前端）
   if (rawPath === '/mcp-ask') {
     bridge.handleMcpAsk(req, res);
@@ -97,6 +131,10 @@ const server = http.createServer((req, res) => {
   }
   if (rawPath === '/mcp-pen') {
     bridge.handleMcpPen(req, res);
+    return;
+  }
+  if (rawPath === '/mcp-file') {
+    bridge.handleMcpFile(req, res);
     return;
   }
   // 插件 HTTP 路径注册表（契约 v2）：先于静态服务命中，前缀匹配交给插件

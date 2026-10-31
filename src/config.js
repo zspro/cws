@@ -71,6 +71,10 @@ export const SERVER_VERSION = (() => {
     return '';
   }
 })();
+// 对外可访问的基地址（给「文件下载链接」用）：config.json 的 public_base，
+// 缺省按当前 IP 站点的 8443 反代填，部署换域名时改这里即可。
+export const PUBLIC_BASE = String(cfg.public_base || 'https://154.219.106.224:8443').trim();
+
 // 项目的默认根目录：新建项目不填路径时用它拼出 <root>/<名称>。空 = 必须填完整路径。
 export const PROJECTS_ROOT = String(cfg.projects_root || '').trim();
 

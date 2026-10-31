@@ -16,7 +16,7 @@ import {
   persistOneTimeTokens, persistChannels, normalizeBaseUrl, isValidChannelName,
   CLAUDE_BIN, CODEX_BIN, CODEBUDDY_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
   setClaudeBin, setCodexBin, setCodebuddyBin, setDefaultBackend, setGateways, persistBackends,
-  PLUGINS, SERVER_VERSION, SERVER_CAPS, FRAME_AUTH_TIMEOUT_S,
+  PLUGINS, SERVER_VERSION, SERVER_CAPS, FRAME_AUTH_TIMEOUT_S, PUBLIC_BASE,
 } from './config.js';
 import { BASE, log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './util.js';
 
@@ -177,6 +177,28 @@ export class Bridge {
   }
 
   /**
+   * 文件托管：把会话 workspace 里的文件挂成可下载链接（被动模式，不往客户端推字节）。
+   *   shareFile(sid, srcPath) → { url, name, size }
+   * 文件复制到 workspaces/<sid>/shared/ 下，靠 /f/<sid>/<file>?t=<token> 下载。
+   */
+  shareFile(sid, srcPath) {
+    const s = this.sessions.get(String(sid || ''));
+    const dataDir = s ? s.data_dir : path.join(WORKSPACES, String(sid || ''));
+    const dir = path.join(dataDir, 'shared');
+    fs.mkdirSync(dir, { recursive: true });
+    const src = String(srcPath || '');
+    if (!src || !fs.existsSync(src) || !fs.statSync(src).isFile()) return { error: '文件不存在：' + src };
+    const base = path.basename(src).replace(/[^\w.\-一-鿿]/g, '_');
+    const id = crypto.randomBytes(6).toString('hex');
+    const name = id + '-' + base;
+    fs.copyFileSync(src, path.join(dir, name));
+    const size = fs.statSync(path.join(dir, name)).size;
+    const url = PUBLIC_BASE.replace(/\/+$/, '') + '/f/' + encodeURIComponent(String(sid)) + '/' + encodeURIComponent(name) + '?t=' + encodeURIComponent(TOKEN);
+    log('file_share', { session_id: String(sid), name, size });
+    return { url, name: base, size };
+  }
+
+  /**
    * MCP 问卡的桥端入口（POST /mcp-ask，仅回环 + 随机密钥）。
    * 收 {session_id, question, options, multiSelect} → 发标准 ask 帧 → 等用户答复
    * → 把选择回给 MCP 子进程，由 CLI 作为 tool_result 交给模型。
@@ -212,6 +234,27 @@ export class Bridge {
     if (typeof sess.askViaMcp !== 'function') return reply(501, { ok: false, error: 'backend_unsupported' });
     log('mcp_ask_in', { session_id: sid, options: options.length });
     const out = await sess.askViaMcp(question, options, !!body.multiSelect);
+    try { reply(200, { ok: true, ...out }); } catch { /* socket gone */ }
+  }
+
+  /** MCP 共享文件：POST /mcp-file {session_id, path} → 复制进 shared/ 并返回下载链接 */
+  async handleMcpFile(req, res) {
+    const reply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      } catch { /* socket gone */ }
+    };
+    if (req.method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+    if (!safeEqual(String(req.headers['x-cws-ask'] || ''), this.mcpAskSecret)) {
+      return reply(403, { ok: false, error: 'forbidden' });
+    }
+    let raw = '';
+    try { for await (const chunk of req) raw += chunk; } catch { return reply(400, { ok: false, error: 'bad body' }); }
+    let body;
+    try { body = JSON.parse(raw || '{}'); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+    const out = this.shareFile(String(body.session_id || ''), String(body.path || ''));
+    if (out.error) return reply(400, { ok: false, error: out.error });
     try { reply(200, { ok: true, ...out }); } catch { /* socket gone */ }
   }
 

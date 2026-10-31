@@ -14,7 +14,6 @@ const NL = String.fromCharCode(10);
 const URL_ = process.env.CWS_ASK_URL || '';
 const SECRET = process.env.CWS_ASK_SECRET || '';
 const SESSION = process.env.CWS_ASK_SESSION || '';
-const PEN_URL = URL_.replace(/\/mcp-ask$/, '/mcp-pen');
 
 const TOOL = {
   name: 'ask_user',
@@ -41,44 +40,41 @@ const TOOL = {
 };
 
 const TOOL_SEND = {
-  name: 'send_file',
-  description: 'Write a file onto the dictionary pen. Path must be absolute under /userdisk/ ' +
-    '(e.g. /userdisk/Documents/notes.md). Use this to hand documents, notes or images to the user.',
+  name: 'share_file',
+  description: 'Publish a file from the server so the user can download it on the pen or in the web UI. ' +
+    'Returns a download link — include that link in your reply (markdown link is fine); the client renders ' +
+    'it as a tappable download item. Use this instead of pushing bytes to the device.',
   inputSchema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'absolute path under /userdisk/' },
-      content: { type: 'string', description: 'file content (text, or base64 when encoding=base64)' },
-      encoding: { type: 'string', enum: ['text', 'base64'], description: 'default text' },
+      path: { type: 'string', description: 'absolute path of the file on this machine' },
     },
-    required: ['path', 'content'],
+    required: ['path'],
   },
 };
 
-async function callSendFile(args) {
-  const target = String(args.path || '').trim();
-  if (!target.startsWith('/userdisk/')) return textOf('path 必须以 /userdisk/ 开头', true);
-  const encoding = args.encoding === 'base64' ? 'base64' : 'text';
-  const body = { session_id: SESSION, path: target, encoding };
-  if (encoding === 'base64') body.data = String(args.content || '');
-  else body.content = String(args.content || '');
-  if (!PEN_URL || !SECRET) return textOf('投文件通道未配置（缺 CWS_ASK_* 环境变量）', true);
+const SHARE_URL = URL_.replace(/\/mcp-ask$/, '/mcp-file');
+
+async function callShareFile(args) {
+  const file = String(args.path || '').trim();
+  if (!file) return textOf('path 必填', true);
+  if (!SHARE_URL || !SECRET) return textOf('共享通道未配置（缺 CWS_ASK_* 环境变量）', true);
   let r;
   try {
-    r = await fetch(PEN_URL, {
+    r = await fetch(SHARE_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-cws-ask': SECRET },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(90000),
+      body: JSON.stringify({ session_id: SESSION, path: file }),
+      signal: AbortSignal.timeout(30000),
     });
   } catch (e) {
-    return textOf('投文件请求失败：' + String((e && e.message) || e), true);
+    return textOf('共享请求失败：' + String((e && e.message) || e), true);
   }
   const out = await r.json().catch(() => null);
   if (!r.ok || !out || !out.ok) {
-    return textOf('投文件失败：' + ((out && out.error) || ('HTTP ' + r.status)), true);
+    return textOf('共享失败：' + ((out && out.error) || ('HTTP ' + r.status)), true);
   }
-  return textOf('已写入词典笔：' + target + '（' + (out.bytes || 0) + ' 字节）');
+  return textOf('已发布文件：' + out.name + '（' + out.size + ' 字节）。下载链接（请把它写进回复，用户点一下即可下载）：' + out.url);
 }
 
 function send(obj) { process.stdout.write(JSON.stringify(obj) + NL); }
@@ -145,8 +141,8 @@ function handle(msg) {
       callAsk(params.arguments || {}).then((result) => send({ jsonrpc: '2.0', id, result }));
       return;
     }
-    if (params.name === 'send_file') {
-      callSendFile(params.arguments || {}).then((result) => send({ jsonrpc: '2.0', id, result }));
+    if (params.name === 'share_file') {
+      callShareFile(params.arguments || {}).then((result) => send({ jsonrpc: '2.0', id, result }));
       return;
     }
     send({ jsonrpc: '2.0', id, error: { code: -32602, message: 'unknown tool: ' + params.name } });
