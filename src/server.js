@@ -95,6 +95,10 @@ const server = http.createServer((req, res) => {
     bridge.handleMcpAsk(req, res);
     return;
   }
+  if (rawPath === '/mcp-pen') {
+    bridge.handleMcpPen(req, res);
+    return;
+  }
   // 插件 HTTP 路径注册表（契约 v2）：先于静态服务命中，前缀匹配交给插件
   for (const [prefix, handler] of bridge.httpHandlers) {
     if (rawPath === prefix || rawPath.startsWith(prefix)) {

@@ -132,6 +132,7 @@ export class Bridge {
     this.httpHandlers = [];           // 路径前缀 → (req, res)，先于静态服务命中
     // MCP 问卡（src/mcp-ask.js → POST /mcp-ask）：密钥每进程随机，只走 127.0.0.1
     this.mcpAskSecret = crypto.randomBytes(16).toString('hex');
+    this.pendingPenFiles = new Map();  // pen_file 待回执：id → {resolve, timer}
     this.pluginShutdowns = [];        // 插件 shutdown()，桥关停时逆序调用
     this.kaxiPluginTools = new Map(); // 插件贡献给卡西的工具：name → {def, fn}——
     //  卡西（app/手表端 kx.chat 与 QQ 端 L5 共用）的工具表 = KX_TOOLS ∪ 本表
@@ -212,6 +213,56 @@ export class Bridge {
     log('mcp_ask_in', { session_id: sid, options: options.length });
     const out = await sess.askViaMcp(question, options, !!body.multiSelect);
     try { reply(200, { ok: true, ...out }); } catch { /* socket gone */ }
+  }
+
+  /**
+   * MCP 投文件到笔：POST /mcp-pen（同 /mcp-ask 的鉴权）。
+   * 帧：{post_type:'pen_file', session_id, id, path, data(base64)}；笔侧解码落盘后回
+   * pen_file_ack。路径由笔侧再校验（只允许 /userdisk/ 下）。
+   */
+  async handleMcpPen(req, res) {
+    const reply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      } catch { /* socket gone */ }
+    };
+    if (req.method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+    if (!safeEqual(String(req.headers['x-cws-ask'] || ''), this.mcpAskSecret)) {
+      return reply(403, { ok: false, error: 'forbidden' });
+    }
+    let raw = '';
+    try {
+      for await (const chunk of req) {
+        raw += chunk;
+        if (raw.length > 4 * 1024 * 1024) return reply(413, { ok: false, error: 'too large' });
+      }
+    } catch {
+      return reply(400, { ok: false, error: 'bad body' });
+    }
+    let body;
+    try { body = JSON.parse(raw || '{}'); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+    const sid = String(body.session_id || '');
+    const pathIn = String(body.path || '').trim();
+    if (!pathIn.startsWith('/userdisk/')) return reply(400, { ok: false, error: 'path must be under /userdisk/' });
+    let data = String(body.data || '');
+    if (body.encoding !== 'base64') data = Buffer.from(String(body.content || ''), 'utf8').toString('base64');
+    if (!data) return reply(400, { ok: false, error: 'empty content' });
+    const s = this.sessions.get(sid);
+    if (!s || s.closed) return reply(404, { ok: false, error: 'session_not_found' });
+    const id = crypto.randomBytes(8).toString('hex');
+    const bytes = Buffer.from(data, 'base64').length;
+    const done = new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingPenFiles.delete(id);
+        resolve({ ok: false, error: 'pen_timeout' });
+      }, 60000);
+      this.pendingPenFiles.set(id, { resolve, timer });
+    });
+    await this._wsSend(s.ws, { post_type: 'pen_file', session_id: sid, id, path: pathIn, data });
+    log('pen_file_send', { session_id: sid, bytes });
+    const out = await done;
+    try { reply(200, { ...out, bytes }); } catch { /* socket gone */ }
   }
 
   /** 插件级一次性上下文（init 用，与命令级 ctx 区分）。track 用于 init 失败回滚。 */
@@ -618,6 +669,19 @@ export class Bridge {
         await this._wsSend(ws, { post_type: 'sessions', sessions: this.sessionsSnapshot(), echo });
         break;
       // ---- 项目（工作目录）：一个目录挂多个会话 ----
+      case 'pen_file_ack': {
+        const pend = this.pendingPenFiles.get(String(params.id || ''));
+        if (pend) {
+          this.pendingPenFiles.delete(String(params.id || ''));
+          clearTimeout(pend.timer);
+          pend.resolve({
+            ok: params.ok === true,
+            error: params.ok === true ? undefined : String(params.error || 'pen_write_failed'),
+            path: params.path ? String(params.path) : undefined,
+          });
+        }
+        break;
+      }
       case 'projects.list':
         await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), root: projectsRoot(), echo });
         break;

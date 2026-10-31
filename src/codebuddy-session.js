@@ -141,7 +141,8 @@ export class CodebuddySession extends BaseSession {
       // ptc/minimal 的唯一直连工具是 REPL（其余走 REPL 沙箱内），
       // 不进 allowlist 的话 default 权限档下会被 CLI 直接拒绝
       '--allowedTools', (this.agent_mode === 'ptc' || this.agent_mode === 'minimal')
-        ? ALLOWED_TOOLS + ',REPL,mcp__cwsask__ask_user' : ALLOWED_TOOLS,
+        ? ALLOWED_TOOLS + ',REPL,mcp__cwsask__ask_user,mcp__cwsask__send_file'
+        : ALLOWED_TOOLS + ',mcp__cwsask__ask_user,mcp__cwsask__send_file',
     ];
     if (this.launch_mode === 'bypassPermissions') {
       // -y = bypassPermissions；CODEBUDDY_IS_SANDBOX=1 全放行依赖 -y 存在
@@ -151,11 +152,12 @@ export class CodebuddySession extends BaseSession {
     if (this.agent_mode && CODEBUDDY_TOOL_MODES.includes(this.agent_mode)) {
       args.push('--tool-mode', this.agent_mode);
     }
+    // 自家 MCP：ask_user（问卡）+ send_file（往笔上投文件）。cli 模式下问卡本来就有
+    // 原生通道，但 send_file 一样有用，所以所有 codebuddy 模式都挂。
+    const mcpCfg = this._mcpAskConfig();
+    if (mcpCfg) args.push('--mcp-config', mcpCfg);
     if (this.agent_mode === 'ptc' || this.agent_mode === 'minimal') {
-      // REPL 里的 AskUserQuestion 走不通（嵌套审批无宿主）→ 挂自家 MCP 问卡工具，
-      // 并把「问用户就用它」写进系统提示（见 _REPL_ASK_GUIDANCE）
-      const mcpCfg = this._mcpAskConfig();
-      if (mcpCfg) args.push('--mcp-config', mcpCfg);
+      // REPL 里的 AskUserQuestion 走不通（嵌套审批无宿主）→ 系统提示指路 ask_user
       args.push('--append-system-prompt', _REPL_ASK_GUIDANCE);
     }
     // 超长会话防静默截断： nearing 阈值时 CLI 自动压缩（compact_boundary 事件
