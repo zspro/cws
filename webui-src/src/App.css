@@ -987,3 +987,12 @@ body {
 .ask-done { display: flex; align-items: center; gap: 6px; margin: 6px 0 6px 46px; color: var(--ink-faint); font-size: 12px; }
 .ask-done-mark { color: #6fae7a; font-weight: 700; }
 .ask-done.denied .ask-done-mark { color: #d0736a; }
+
+/* 共享文件链接 → 下载卡片 */
+.md a[href*="/f/"] {
+  display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%;
+  padding: 10px 14px; margin: 8px 0; border-radius: 10px;
+  background: var(--tint); border: 1px solid var(--line, #2f2d2a);
+  color: var(--ink); text-decoration: none; font-size: 13.5px;
+}
+.md a[href*="/f/"]:hover { background: var(--tint-strong); }
