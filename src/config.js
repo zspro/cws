@@ -119,7 +119,7 @@ export const PLUGINS = {};
 }
 // Workspace 磁盘保留期（秒）：注册表外的目录超过该时长才会被 sweep 删除；<=0 关闭清扫
 export const WS_RETENTION_S = Number(cfg.ws_retention_s ?? 7 * 86400);
-export const ALLOWED_TOOLS = cfg.allowed_tools || 'Read,Grep,Glob,AskUserQuestion';
+export const ALLOWED_TOOLS = cfg.allowed_tools || 'Read,Grep,Glob,Write,Edit,Bash,AskUserQuestion';
 export const PERMISSION_MODE = cfg.permission_mode || 'default';
 // codebuddy 自动压缩阈值（--autocompact）：自定义渠道下 CLI 不知道模型窗口，
 // 'auto' 永不触发，transcript 超窗后上游静默截断开头（表现为"忘记早前约定"）。

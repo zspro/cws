@@ -982,3 +982,8 @@ body {
   .panel { width: 94vw; max-width: 560px; max-height: 86vh; }
   .proj-group .sess-item { margin-left: 4px; }
 }
+
+/* 已答复的问卡/权限卡：收成一行 */
+.ask-done { display: flex; align-items: center; gap: 6px; margin: 6px 0 6px 46px; color: var(--ink-faint); font-size: 12px; }
+.ask-done-mark { color: #6fae7a; font-weight: 700; }
+.ask-done.denied .ask-done-mark { color: #d0736a; }
