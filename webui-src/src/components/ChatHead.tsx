@@ -48,6 +48,25 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                   <IconStop size={13} /> 停止
                 </button>
               )}
+              {(() => {
+                const opts = Array.from(new Set([
+                  ...(((st.backends?.models as Record<string, string[]> | undefined)?.[info.backend]) || []),
+                  ...(info.model ? [info.model] : []),
+                  ...store.channelsForBackend(info.backend).map((c) => c.model || "").filter(Boolean),
+                ]));
+                if (!opts.length) return null;
+                return (
+                  <select
+                    className="model-chip"
+                    title="当前会话的模型（只影响这个会话）"
+                    value={info.model || ""}
+                    onChange={(e) => store.applyModel(info.session_id, info.channel || "", e.target.value)}
+                  >
+                    <option value="">默认模型</option>
+                    {opts.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                );
+              })()}
               {(info.backend === "codebuddy" || info.backend === "codebuddy-tui") && (
                 <button
                   className={"ghost ch-icon" + (info.backend === "codebuddy-tui" ? " on" : "")}
