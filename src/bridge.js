@@ -186,7 +186,9 @@ export class Bridge {
     const dataDir = s ? s.data_dir : path.join(WORKSPACES, String(sid || ''));
     const dir = path.join(dataDir, 'shared');
     fs.mkdirSync(dir, { recursive: true });
-    const src = String(srcPath || '');
+    let src = String(srcPath || '').trim();
+    // 相对路径按会话 cwd 解析（模型常写 hello.md；cwd 就是它干活的项目目录）
+    if (src && !path.isAbsolute(src)) src = path.join(s ? s.cwd : dataDir, src);
     if (!src || !fs.existsSync(src) || !fs.statSync(src).isFile()) return { error: '文件不存在：' + src };
     const base = path.basename(src).replace(/[^\w.\-一-鿿]/g, '_');
     const id = crypto.randomBytes(6).toString('hex');
