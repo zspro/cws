@@ -73,6 +73,14 @@ const _REPL_ASK_GUIDANCE =
   '不要调用 REPL 里的 AskUserQuestion 或 ExitPlanMode（没有嵌套审批宿主，会被直接拒绝）。' +
   '如果 ask_user 不可用，就把问题和选项写进回复正文、结束本轮等用户回复。';
 
+// 文件下载卡片的渲染约定：客户端只认「单独成行、原样的 /f/ 链接」。
+// 写进代码块/加反引号/加粗都会退化成纯文本，用户点不了。
+const _FILE_LINK_GUIDANCE =
+  '【发文件给用户】要交付文件时调用 MCP 工具 share_file（REPL 里 mcp.cwsask.share_file({path})），' +
+  '不要用代码块贴文件内容。发布成功后，把返回的下载链接单独占一行、原样写进回复正文：' +
+  '不要放进代码围栏、不要加反引号、不要加粗、不要和别的字挤在同一行——' +
+  '客户端靠这一行渲染成可点的文件下载卡片，格式错了用户就点不到。';
+
 const _PTC_ASK_DENY =
   '本会话不能这样问用户：REPL 里的 AskUserQuestion / ExitPlanMode 没有审批宿主，' +
   '调用会一直挂着。请改用 MCP 工具 ask_user（REPL 里 mcp.cwsask.ask_user({question, options})），' +
@@ -156,10 +164,14 @@ export class CodebuddySession extends BaseSession {
     // 原生通道，但 send_file 一样有用，所以所有 codebuddy 模式都挂。
     const mcpCfg = this._mcpAskConfig();
     if (mcpCfg) args.push('--mcp-config', mcpCfg);
+    // 系统提示合并成一次传（多次 --append-system-prompt 只保留最后一个）
+    const guides = [];
     if (this.agent_mode === 'ptc' || this.agent_mode === 'minimal') {
-      // REPL 里的 AskUserQuestion 走不通（嵌套审批无宿主）→ 系统提示指路 ask_user
-      args.push('--append-system-prompt', _REPL_ASK_GUIDANCE);
+      // REPL 里的 AskUserQuestion 走不通（嵌套审批无宿主）→ 指路 ask_user
+      guides.push(_REPL_ASK_GUIDANCE);
     }
+    guides.push(_FILE_LINK_GUIDANCE);
+    if (guides.length) args.push('--append-system-prompt', guides.join(String.fromCharCode(10, 10)));
     // 超长会话防静默截断： nearing 阈值时 CLI 自动压缩（compact_boundary 事件
     // 由 _onCompact 落盘广播）。'auto' 在自定义渠道下不触发，必须显式给阈值
     if (CODEBUDDY_AUTOCOMPACT && CODEBUDDY_AUTOCOMPACT !== '0') {

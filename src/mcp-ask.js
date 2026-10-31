@@ -42,8 +42,9 @@ const TOOL = {
 const TOOL_SEND = {
   name: 'share_file',
   description: 'Publish a file from the server so the user can download it on the pen or in the web UI. ' +
-    'Returns a download link — include that link in your reply (markdown link is fine); the client renders ' +
-    'it as a tappable download item. Use this instead of pushing bytes to the device.',
+    'Returns a download link. Put that link on its OWN line in your reply, verbatim: no code block, ' +
+    'no backticks, no bold, not mixed with other text — clients only turn such a line into a tappable ' +
+    'download card.',
   inputSchema: {
     type: 'object',
     properties: {
