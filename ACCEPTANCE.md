@@ -402,3 +402,8 @@ CLI 二进制自身不设 `setSessionCanUseTool`（那是 SDK `query({canUseTool
   → `ask_replied` → `final「已收到你的选择：测试通道 A」` — PASS。
 - 手动选 `ptc`：出现 `ask`（kind=permission，tool=REPL），与本次改动无关（生产
   近 3 天同类事件仅 1 次）；ptc 的正文提问路径仍按上一节机制生效。
+
+### 修订（2026-10-31 晚）
+
+默认 agent 改回 `ptc`（用户要求）。`cli` 仍然可在界面手动选，问卡只在该模式下可用；
+`ptc` 走正文提问 + 15s 嵌套超时兜底。上一节记录的是两种模式的实测差异，保留作依据。
