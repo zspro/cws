@@ -8,7 +8,7 @@ import { Bridge } from './bridge.js';
 import {
   TOKEN, ONE_TIME_TOKENS, PORT, WEBUI_CFG, persistOneTimeTokens, gatewayByName,
 } from './config.js';
-import { BASE, log, safeEqual } from './util.js';
+import { BASE, log, safeEqual, isValidSid } from './util.js';
 
 const bridge = new Bridge();
 const wss = new WebSocketServer({ noServer: true });
@@ -84,6 +84,7 @@ const SHARED_MIME = {
   '.zip': 'application/zip', '.html': 'text/html; charset=utf-8',
 };
 function serveSharedFile(req, res, rawPath) {
+  try {
   const url = new URL(req.url || '/', 'http://bridge.local');
   const t = url.searchParams.get('t') || '';
   if (!t || !safeEqual(t, TOKEN)) { res.writeHead(403).end('forbidden'); return; }
@@ -103,6 +104,10 @@ function serveSharedFile(req, res, rawPath) {
     'content-disposition': 'attachment; filename*=UTF-8\'\' ' + encodeURIComponent(name.replace(/^[0-9a-f]{12}-/, '')),
   });
   fs.createReadStream(filePath).pipe(res);
+  } catch (e) {
+    log('shared_file_err', { path: rawPath, err: String(e) });
+    try { if (!res.headersSent) res.writeHead(500).end('error'); } catch { /* ignore */ }
+  }
 }
 
 const server = http.createServer((req, res) => {
