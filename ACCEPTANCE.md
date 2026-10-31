@@ -538,3 +538,27 @@ CLI 2.179 的 commander 定义里 `--tool-mode <cli|ptc|minimal|create>` 才校�
 - 变量形态：被当场拒绝，模型一次就改走正文提问（不再三连重试）— PASS。
 - 对照：`--disallowedTools AskUserQuestion` 也能消掉卡死（工具不在目录里，模型
   直接正文提问，13.3s 收口），作为应急开关。
+## ptc 问卡改走 MCP 工具（2026-10-31，6a817ea + dcc5daf）
+
+### 为什么要换掉「改写 REPL 代码塞答案」
+前一版（feec71c/fb2a423）把用户答案内联进 REPL 单元格：
+`const __cwsPtcAsk = {questions, answers}; ... return __cwsPtcAsk;`。
+CLI 会把 control_response 的 updatedInput **当成模型自己写的入参**存进 transcript，
+模型回头看见答案字面量，判定「这些答案是我自己预填的」，当场声明「几轮测试全部无效」——
+比卡死更糟。结论：客户端不能往模型的代码里塞别人的话。
+
+### 现在的做法
+- `src/mcp-ask.js`：自带 MCP 服务（stdio JSON-RPC，工具 `ask_user{question, options, multiSelect}`）。
+  spawn codebuddy 时用 `--mcp-config` 挂上，env 带 `CWS_ASK_URL/SECRET/SESSION`。
+- `src/bridge.js`：`POST /mcp-ask`（仅 127.0.0.1，头 `x-cws-ask` 校验每进程随机密钥）
+  → 找 session → `askViaMcp()` → 发标准 ask 帧（笔/WebUI 同一张卡）→ 等答复 → 回给 MCP 子进程。
+- `BaseSession#askViaMcp`：复用 pending_asks；超时按 ASK_TIMEOUT 回 `{behavior:'timeout'}`。
+- `CodebuddySession#askReply`：`entry.mcp` 分支不写 control_response，只 resolve 给 MCP。
+- ptc/minimal：`--allowedTools` 追加 `mcp__cwsask__ask_user`；系统提示改成「用 ask_user」；
+  直接调 REPL 里的 AskUserQuestion/ExitPlanMode 仍当场拒绝（0s）并指路。
+- ptc/minimal 的 REPL 单元格权限直接放行（单元格里调 MCP 会让 CLI 二次弹「权限请求 · REPL」）。
+
+### 验收（真 CLI 2.179，线上 :8642）
+- REPL 内可调用 `mcp.cwsask.ask_user`，返回真正的 tool_result（无预填痕迹）。
+- 端到端：`10.2s ASK(tool=AskUserQuestion, kind=question)` → 答「方案B」→ `12.5s FINAL 你选择了「方案B」`。
+- WebUI 侧同步修了问卡选项缺 `value` 导致答复恒为 `"on"` 的 bug（a8c2834）。
