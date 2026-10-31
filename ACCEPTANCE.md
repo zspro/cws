@@ -359,3 +359,46 @@ ask 通道帧，用户侧无问卡；CLI 内部挂等到嵌套审批超时（生
   把嵌套审批接到 stream-json 控制通道后可撤掉 guidance；
 - ExitPlanMode 嵌套同样受益于短超时（同一 isProductInteractionTool 通道），
   未单独实测。
+
+## 默认 agent 模式改回 cli（2026-10-31）
+
+### 结论
+
+交互 TUI 里 ptc 的 `REPL → AskUserQuestion` 能弹卡，是因为 **TUI 本身就是 ask
+host**；headless stream-json 客户端没有这个宿主，嵌套审批只能挂到
+`waitForNestedDecision` 的 10 分钟超时（`lY=6e5`，可用
+`CODEBUDDY_REPL_NESTED_TIMEOUT_MS` 压短）。
+
+逆向确认的调用链（CLI 2.176，`runReplProductInteraction`）：
+
+```
+W = resolveCanUseTool(session)          // 只有 SDK 传入 canUseTool 才有值
+W ? askHost(W, ...) → control_request/can_use_tool   // 可达
+  : waitForNestedDecision(interruptionService, ...)  // 无宿主 → 超时 lJ
+```
+
+CLI 二进制自身不设 `setSessionCanUseTool`（那是 SDK `query({canUseTool})` 路径），
+所以嵌套 ask 永远走右边。实测三种组合均收不到任何控制帧：
+
+- `--agent ptc` + `capabilities.askUserQuestion` + `bypassPermissions`
+- `--agent ptc` + `CODEBUDDY_A2A_DUAL_CHANNEL_INTERACTION=1`（A2A 的 ask seat 需
+  `resolveAskHandler`，单客户端没有）
+- `--agent ptc` + `--permission-mode default`（只有外层 REPL 自己的权限卡会到）
+
+而 `--agent cli` 下 `AskUserQuestion` 在对话层目录里，直接走 can_use_tool。
+
+### 改动
+
+- `src/codebuddy-session.js`：`DEFAULT_AGENT` `ptc` → `cli`（新建会话默认；
+  ptc/minimal 仍可手动选，保留 guidance + 15s 嵌套超时兜底）。
+- WebUI：`Panels.tsx` 新建会话默认、`ChatHead.tsx` 下拉回退值、`store.ts`
+  agent_ack 展示名回退，全部由 `ptc` 改 `cli`。
+- README 权限/提问段落更新。
+
+### 验收（真 CLI，临时桥 :18650，默认 agent）
+
+- 新建会话 `agent_mode: cli`；发「用 AskUserQuestion 问我 A 还是 B」：
+  `ask`（kind=question，questions 完整）→ 回 `allow + answers`
+  → `ask_replied` → `final「已收到你的选择：测试通道 A」` — PASS。
+- 手动选 `ptc`：出现 `ask`（kind=permission，tool=REPL），与本次改动无关（生产
+  近 3 天同类事件仅 1 次）；ptc 的正文提问路径仍按上一节机制生效。

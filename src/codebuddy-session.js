@@ -52,8 +52,12 @@ function _procEnv(channel, cliUuid) {
 }
 
 const CODEBUDDY_AGENTS = ['cli', 'ptc', 'minimal', 'create', 'multitask'];
-// 未显式选择时的默认 agent 模式（2026-10-27 起默认 PTC）
-const DEFAULT_AGENT = 'ptc';
+// 未显式选择时的默认 agent 模式。
+// 2026-10-27 默认 PTC（省 token 的 code-mode）；2026-10-31 改回 cli：PTC 下
+// AskUserQuestion 只能写在 REPL 里，而 REPL 嵌套审批在 stream-json 客户端无宿主
+// （TUI 里能弹是因为 TUI 就是 ask host；真 CLI 实测声明 capabilities 也一样挂死），
+// 结构化问卡因此不可达。cli 模式的 AskUserQuestion 走对话层 can_use_tool，实测可用。
+const DEFAULT_AGENT = 'cli';
 // CLI 的 ptc/minimal 系统提示要求 AskUserQuestion 只能写在 REPL 里调，但
 // stream-json 客户端没有嵌套审批 UI（实测真 CLI 2.175/2.176：合法参数挂死到
 // 嵌套超时，对话层又没有该工具的 catalog 项）→ 结构化问卡在 REPL 模式不可达。

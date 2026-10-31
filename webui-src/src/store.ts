@@ -442,7 +442,7 @@ class Store {
       case "agent_ack": {
         const s = this.sess(f.session_id);
         s.info.agent_mode = f.agent || null;
-        this.toast("Agent 模式已切换：" + (AGENT_OPTIONS.find(([v]) => v === (f.agent || "ptc"))?.[1] || f.agent || "默认") + (f.applied ? "" : "（下次生效）"), "ok");
+        this.toast("Agent 模式已切换：" + (AGENT_OPTIONS.find(([v]) => v === (f.agent || "cli"))?.[1] || f.agent || "默认") + (f.applied ? "" : "（下次生效）"), "ok");
         this.touch();
         break;
       }

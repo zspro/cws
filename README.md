@@ -104,8 +104,9 @@ final）→ cws delta/final；远程执行审批 → `session.approval` 事件 �
   `control_request/can_use_tool` → ask 卡片（与 claude 同协议，载荷不同：
   codebuddy 用 `{allowed,updatedInput}` / `{allowed:false,reason}`，不用 behavior）。
   AskUserQuestion 在 `cli` agent 下走 kind=question 的提问卡片（allow 需带
-  `answers`）；`ptc`/`minimal` 下该工具经 REPL 沙箱代理，headless 中 CLI 内部
-  超时自动降级为文本提问。bypassPermissions 照旧全放行（自动追加 `-y`，并注入
+  `answers`）；`ptc`/`minimal` 下该工具经 REPL 沙箱代理，而 REPL 嵌套审批的宿主
+  是交互 TUI（headless 客户端没有），所以结构化问卡不可达——默认 agent 因此是
+  `cli`，`ptc`/`minimal` 用追加系统提示 + 15s 嵌套超时降级为正文提问。bypassPermissions 照旧全放行（自动追加 `-y`，并注入
   `CODEBUDDY_IS_SANDBOX=1` 沙箱全放行）。
   权限/渠道切换 = 重启进程换参（支持运行中改，下一轮边界生效）。
 - 渠道协议须为 **openai**（SDK 在 base_url 后拼 `/chat/completions`，Bearer 鉴权）：

@@ -96,7 +96,7 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                 <select
                   className="ctrl"
                   title="Agent 模式"
-                  value={info.agent_mode || "ptc"}
+                  value={info.agent_mode || "cli"}
                   onChange={(e) => store.applyAgent(info.session_id, e.target.value)}
                 >
                   {AGENT_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}

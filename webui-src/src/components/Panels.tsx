@@ -29,7 +29,7 @@ export function NewSessionPanel() {
   const [channel, setChannel] = useState("");
   const [model, setModel] = useState("");
   const [perm, setPerm] = useState("default");
-  const [agent, setAgent] = useState("ptc");
+  const [agent, setAgent] = useState("cli");
   const [gateway, setGateway] = useState(
     st.backends?.gateways[0]?.name || "openclaw");
   const [remote, setRemote] = useState("");
