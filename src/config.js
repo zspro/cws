@@ -71,6 +71,9 @@ export const SERVER_VERSION = (() => {
     return '';
   }
 })();
+// 项目的默认根目录：新建项目不填路径时用它拼出 <root>/<名称>。空 = 必须填完整路径。
+export const PROJECTS_ROOT = String(cfg.projects_root || '').trim();
+
 export const SERVER_CAPS = ['frame_auth', 'hello', 'backends', 'remark', 'projects'];
 // 无 token 升级进来（v0.3 路径）的连接，等首帧 auth 的窗口；超时未鉴权即断。
 // URL ?token= 鉴权（v0.2，WebUI/QQ 在用）不受影响。

@@ -189,6 +189,8 @@ export interface AppState {
   defaultChannel: string;
   backends: BackendsInfo | null;
   projects: Project[];
+  /** 默认项目根目录（config.json 的 projects_root，可空） */
+  projectsRoot: string;
   modal: ModalState;
   toasts: Toast[];
   update: UpdateState;

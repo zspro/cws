@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { BASE, log } from './util.js';
+import { PROJECTS_ROOT } from './config.js';
 
 const FILE = path.join(BASE, 'projects.json');
 // 项目路径一律按 POSIX 处理（服务端是 Linux；本地 Windows 调试时行为也一致）
@@ -45,8 +46,22 @@ export function checkProjectPath(raw) {
   return { path: norm };
 }
 
+/** 默认根目录（config.json 的 projects_root）；没配返回空串 */
+export function projectsRoot() { return PROJECTS_ROOT || ''; }
+
+/** 名称 → 安全的目录名（去掉路径分隔符与控制字符，空白转 -） */
+function safeSeg(name) {
+  return String(name || '').trim().replace(/[\/\x00-\x1f]/g, '-').replace(/\s+/g, '-');
+}
+
 export function createProject({ name, path: rawPath, create = true } = {}) {
-  const chk = checkProjectPath(rawPath);
+  let want = String(rawPath || '').trim();
+  if (!want && PROJECTS_ROOT) {
+    const seg = safeSeg(name);
+    if (!seg) return { error: '填个名称，或直接写完整路径' };
+    want = PROJECTS_ROOT.replace(/\/+$/, '') + '/' + seg;
+  }
+  const chk = checkProjectPath(want);
   if (chk.error) return { error: chk.error };
   const norm = chk.path;
   const all = readAll();

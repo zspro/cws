@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { BaseSession } from './base-session.js';
-import { listProjects, projectById, createProject, updateProject, deleteProject } from './projects.js';
+import { listProjects, projectById, createProject, updateProject, deleteProject, projectsRoot } from './projects.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
 import { CodebuddySession } from './codebuddy-session.js';
@@ -619,24 +619,24 @@ export class Bridge {
         break;
       // ---- 项目（工作目录）：一个目录挂多个会话 ----
       case 'projects.list':
-        await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), echo });
+        await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), root: projectsRoot(), echo });
         break;
       case 'projects.create': {
         const r = createProject({ name: params.name, path: params.path, create: params.create !== false });
         if (r.error) await this._wsSend(ws, { post_type: 'error', code: 'bad_project', message: r.error, echo });
-        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), project: r.project, echo });
+        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), root: projectsRoot(), project: r.project, echo });
         break;
       }
       case 'projects.update': {
         const r = updateProject(params.id, { name: params.name, path: params.path, create: params.create !== false });
         if (r.error) await this._wsSend(ws, { post_type: 'error', code: 'bad_project', message: r.error, echo });
-        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), project: r.project, echo });
+        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), root: projectsRoot(), project: r.project, echo });
         break;
       }
       case 'projects.delete': {
         const r = deleteProject(params.id);
         if (r.error) await this._wsSend(ws, { post_type: 'error', code: 'bad_project', message: r.error, echo });
-        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), deleted: r.project.id, echo });
+        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), root: projectsRoot(), deleted: r.project.id, echo });
         break;
       }
       case 'channels.list':

@@ -1,4 +1,5 @@
 {
+  "projects_root": "/www/project",
   "port": 8642,
   "claude_bin": "/usr/local/bin/claude",
   "codex_bin": "codex",

@@ -373,6 +373,7 @@ export function RemarkPanel({ sid }: { sid: string }) {
 
 // ---------- 项目（工作目录）新建/编辑 ----------
 export function ProjectPanel({ project }: { project?: Project }) {
+  const st = useStore();
   const editing = !!project;
   const [name, setName] = useState(project?.name || "");
   const [dir, setDir] = useState(project?.path || "");
@@ -385,9 +386,10 @@ export function ProjectPanel({ project }: { project?: Project }) {
   return (
     <Shell title={editing ? "项目设置" : "新建项目"} onClose={() => store.setModal(null)}>
       <label>名称（留空 = 用目录名）<input value={name} onChange={(e) => setName(e.target.value)} placeholder="PStore" /></label>
-      <label>工作目录（绝对路径，不存在会自动创建）
-        <input value={dir} onChange={(e) => setDir(e.target.value)} placeholder="/my/run/pstore" />
+      <label>工作目录（绝对路径，不存在会自动创建；留空 = 默认根目录/名称）
+        <input value={dir} onChange={(e) => setDir(e.target.value)} placeholder={((st.projectsRoot || "") + "/" + (name || "项目名"))} />
       </label>
+      <div className="panel-hint">默认根目录：{st.projectsRoot || "（未配置 projects_root，需填完整路径）"}</div>
       <div className="panel-actions">
         {editing && project && (
           <button className="ghost danger" onClick={() => {

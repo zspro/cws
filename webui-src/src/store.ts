@@ -55,6 +55,7 @@ class Store {
     defaultChannel: "",
     backends: null,
     projects: [],
+    projectsRoot: "",
     modal: null,
     toasts: [],
     update: this.update,
@@ -384,6 +385,7 @@ class Store {
       }
       case "projects": {
         this.state.projects = Array.isArray(f.projects) ? f.projects : [];
+        this.state.projectsRoot = typeof f.root === "string" ? f.root : "";
         this.touch();
         break;
       }
