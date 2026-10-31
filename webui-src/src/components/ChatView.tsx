@@ -4,6 +4,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { store, useStore } from "../store";
 import { md } from "../markdown";
+import ToolDetail, { detailSummary } from "./ToolDetail";
 import type { AskFrame, Msg, SessionState } from "../types";
 import { IconCheck, IconChevron, IconFile, IconPencil, IconTerminal } from "../icons";
 
@@ -37,6 +38,7 @@ function ImageRow({ images }: { images?: { media_type: string; data: string }[] 
 function ToolLine({ m }: { m: Extract<Msg, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
   const { name, brief } = splitTool(m.text);
+  const stat = detailSummary(name, m.detail);
   return (
     <div
       className={"tool-line" + (m.run ? " running" : "") + (m.detail ? " expandable" : "") + (m.sub ? " sub" : "")}
@@ -46,8 +48,11 @@ function ToolLine({ m }: { m: Extract<Msg, { kind: "tool" }> }) {
       <span className="t-name">{name}</span>
       {brief ? <span className="t-brief" title={brief}>{brief}</span> : null}
       {m.run ? <span className="t-run" /> : null}
+      {stat && !open ? <span className="t-stat">{stat}</span> : null}
       {m.detail ? <span className="t-fold">{open ? "▾" : "▸"}</span> : null}
-      {open && m.detail ? <pre className="t-detail">{m.detail}</pre> : null}
+      {open && m.detail ? (
+        <div className="t-detail"><ToolDetail name={name} detail={m.detail} /></div>
+      ) : null}
     </div>
   );
 }

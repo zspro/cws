@@ -29,11 +29,22 @@ function jsonReplacer(_k, v) {
 
 /** Compact human-safe summary of a tool input object. */
 export function briefOf(inputObj, limit = 80) {
-  let s;
-  try {
-    s = JSON.stringify(inputObj);
-  } catch {
-    s = String(inputObj);
+  // 摘要优先取「人话」字段：Bash 给命令、读写工具给路径、搜索给 pattern/query。
+  // 直接 JSON.stringify 会让两条客户端都显示成一坨 {"command":"…"}。
+  let s = '';
+  if (inputObj && typeof inputObj === 'object') {
+    const pick = [inputObj.command, inputObj.file_path, inputObj.path, inputObj.pattern,
+      inputObj.query, inputObj.description, inputObj.prompt, inputObj.url]
+      .find((v) => typeof v === 'string' && v.trim());
+    if (pick) s = String(pick).trim().replace(/\s+/g, ' ');
+    else if (typeof inputObj.code === 'string') s = inputObj.code.trim().replace(/\s+/g, ' ');
+  }
+  if (!s) {
+    try {
+      s = JSON.stringify(inputObj);
+    } catch {
+      s = String(inputObj);
+    }
   }
   s = s ?? '';
   return s.length <= limit ? s : s.slice(0, limit) + '…';
@@ -109,7 +120,14 @@ export function safeEqual(a, b) {
 
 /** Spawn CLI with a fresh process group so stop kills only it. */
 export function spawnDetached(cmd, args, opts = {}) {
-  return spawn(cmd, args, { ...opts, detached: true });
+  const child = spawn(cmd, args, { ...opts, detached: true });
+  // spawn 失败（二进制不存在 / 没执行权限）走异步 'error' 事件，没人监听就
+  // 直接打崩整个桥进程——所有会话一起挂。这里兜住：只记日志，会话侧靠握手
+  // 失败自己报错，其它会话不受影响。
+  child.on('error', (e) => {
+    log('spawn_error', { cmd: String(cmd), err: String((e && e.message) || e) });
+  });
+  return child;
 }
 
 /** True when the child process is genuinely running (not yet exited, not signal-killed). */

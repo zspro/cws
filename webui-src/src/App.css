@@ -996,3 +996,25 @@ body {
   color: var(--ink); text-decoration: none; font-size: 13.5px;
 }
 .md a[href*="/f/"]:hover { background: var(--tint-strong); }
+
+/* ---------- 工具详情：终端 / 代码高亮 / 编辑 diff ---------- */
+.tool-line .t-stat { color: var(--ink-faint); font-size: 11px; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.tool-line .t-detail { flex-basis: 100%; margin: 6px 0 2px; padding: 0; background: none; }
+.td-wrap { border: 1px solid var(--line, #2f2d2a); border-radius: 8px; overflow: hidden; }
+.td-head { padding: 6px 10px; background: rgba(255,255,255,.04); color: var(--ink-dim); font-size: 11.5px;
+           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.td-pre { margin: 0; padding: 8px 10px; background: #14130f; color: #cfcabf; font-size: 12px; line-height: 18px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+.td-term { display: flex; gap: 8px; padding: 8px 10px; background: #131310; border-radius: 8px;
+           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 18px; }
+.td-term .td-prompt { color: #6fae7a; }
+.td-term .td-cmd { color: #d9d4c8; white-space: pre-wrap; word-break: break-word; }
+.td-diff-line { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 18px; }
+.td-del { background: rgba(215,90,80,.14); color: #e2a49d; display: flex; gap: 6px; padding: 0 8px; }
+.td-add { background: rgba(110,175,120,.14); color: #a9d3b1; display: flex; gap: 6px; padding: 0 8px; }
+.td-sign { opacity: .7; width: 8px; flex: none; }
+.td-code { white-space: pre-wrap; word-break: break-word; }
+.tok-kw { color: #c792ea; }
+.tok-str { color: #a9d3b1; }
+.tok-num { color: #d9a05f; }
+.tok-cm { color: #6b665e; font-style: italic; }

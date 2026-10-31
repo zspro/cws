@@ -748,6 +748,11 @@ export class Bridge {
         else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), root: projectsRoot(), deleted: r.project.id, echo });
         break;
       }
+      case 'models.list': {
+        const be = String(params.backend || 'codebuddy');
+        await this._wsSend(ws, { post_type: 'models', backend: be, models: this.modelsSnapshot(be), echo });
+        break;
+      }
       case 'channels.list':
         await this._wsSend(ws, {
           post_type: 'channels', channels: this.channelsSnapshot(),
@@ -2104,6 +2109,27 @@ export class Bridge {
   }
 
   /** 后端-渠道协议兼容性：auto 通用；anthropic 只配 claude；openai 配 codex/codebuddy。 */
+  /** 扁平模型清单：客户端只选「模型」，服务端按 model 反查渠道。
+   *  协议不兼容的渠道（codebuddy 不能吃 anthropic 渠道）直接不列，免得选了就报错。 */
+  modelsSnapshot(backend = 'codebuddy') {
+    const out = [];
+    const seen = new Set();
+    for (const ch of API_CHANNELS) {
+      if (!ch || typeof ch !== 'object') continue;
+      if (!this._channelProtocolOk(backend, ch)) continue;
+      const names = [];
+      if (ch.model) names.push(String(ch.model));
+      if (Array.isArray(ch.models)) for (const x of ch.models) if (x) names.push(String(x));
+      for (const name of names) {
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ model: name, channel: ch.name, label: ch.label || ch.name });
+      }
+    }
+    return out;
+  }
+
   _channelProtocolOk(backend, ch) {
     if (!ch) return true;
     const proto = ch.protocol || 'auto';
@@ -2135,6 +2161,18 @@ export class Bridge {
       return;
     }
     if ('channel' in params && !params.channel) {
+      // 只给模型（两支客户端现在都这样）：按 model 反查渠道，协议不兼容的跳过；
+      // 查不到就清空渠道走 CLI 自带模型。
+      const want = String(params.model || '').trim().toLowerCase();
+      if (want) {
+        const hit = API_CHANNELS.find((ch) => ch && this._channelProtocolOk(s.backend, ch)
+          && (String(ch.model || '').toLowerCase() === want
+            || (Array.isArray(ch.models) && ch.models.some((x) => String(x).toLowerCase() === want))));
+        if (hit) {
+          await s.setChannel(hit, params.model, echo);
+          return;
+        }
+      }
       await s.setChannel(null, params.model, echo, true);
       return;
     }

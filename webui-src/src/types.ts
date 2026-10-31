@@ -15,6 +15,13 @@ export interface Channel {
   default?: boolean;
 }
 
+/** 扁平模型项：客户端只认「模型」，渠道由服务端按 model 反查 */
+export interface ModelItem {
+  model: string;
+  channel: string;
+  label: string;
+}
+
 export interface Gateway {
   name: string;
   url: string;
@@ -189,6 +196,8 @@ export interface AppState {
   defaultChannel: string;
   backends: BackendsInfo | null;
   projects: Project[];
+  /** 服务端扁平模型清单（models.list） */
+  models: ModelItem[];
   /** 默认项目根目录（config.json 的 projects_root，可空） */
   projectsRoot: string;
   modal: ModalState;

@@ -621,7 +621,12 @@ export class CodebuddySession extends BaseSession {
       this.ready.resolve();
     }
     if (this.ready_announced) {
-      if (model) this.model_name = model;
+      // 首帧 session_ready 是桥代发的（model 未知）：CLI 起来后把真实模型补一条
+      // 轻量帧给客户端（不能重发 session_ready——客户端那边会走重放/接管逻辑）
+      if (model && model !== this.model_name) {
+        this.model_name = model;
+        await this.sendWs({ post_type: 'session_model', session_id: this.id, model });
+      }
       return;
     }
     this.ready_announced = true;

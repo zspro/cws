@@ -18,7 +18,7 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
   useEffect(() => { if (inKx) setSetOpen(false); }, [inKx]);
 
   const meta = info
-    ? info.backend + (info.channel ? " · " + info.channel : "") + (info.model ? " / " + info.model : "")
+    ? (info.model || "默认模型")
       + (info.queued ? ` · 排队 #${info.queue_position ?? "…"}` : info.compacting ? " · 压缩中" : info.turn_active ? " · 运行中" : "")
     : "";
 
@@ -49,21 +49,39 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                 </button>
               )}
               {(() => {
-                const opts = Array.from(new Set([
-                  ...(((st.backends?.models as Record<string, string[]> | undefined)?.[info.backend]) || []),
-                  ...(info.model ? [info.model] : []),
-                  ...store.channelsForBackend(info.backend).map((c) => c.model || "").filter(Boolean),
-                ]));
+                // 只列模型：渠道由服务端按 model 反查（协议不兼容的渠道服务端已经滤掉）
+                const seen = new Set<string>();
+                const opts: { model: string; label?: string }[] = [];
+                for (const m of (st.models || [])) {
+                  if (!m.model || seen.has(m.model)) continue;
+                  seen.add(m.model);
+                  opts.push({ model: m.model, label: m.label !== m.channel ? m.label : undefined });
+                }
+                // 老服务端没有 models.list：退回渠道里配的模型，别让下拉空掉
+                for (const c of store.channelsForBackend(info.backend)) {
+                  const m = c.model || "";
+                  if (!m || seen.has(m)) continue;
+                  seen.add(m);
+                  opts.push({ model: m, label: c.label });
+                }
+                for (const m of (((st.backends?.models as Record<string, string[]> | undefined)?.[info.backend]) || [])) {
+                  if (!m || seen.has(m)) continue;
+                  seen.add(m);
+                  opts.push({ model: m });
+                }
+                if (info.model && !seen.has(info.model)) opts.push({ model: info.model });
                 if (!opts.length) return null;
                 return (
                   <select
                     className="model-chip"
                     title="当前会话的模型（只影响这个会话）"
                     value={info.model || ""}
-                    onChange={(e) => store.applyModel(info.session_id, info.channel || "", e.target.value)}
+                    onChange={(e) => store.applyModel(info.session_id, "", e.target.value)}
                   >
                     <option value="">默认模型</option>
-                    {opts.map((m) => <option key={m} value={m}>{m}</option>)}
+                    {opts.map((o) => (
+                      <option key={o.model} value={o.model}>{o.label ? o.model + " · " + o.label : o.model}</option>
+                    ))}
                   </select>
                 );
               })()}
@@ -137,22 +155,6 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                 </select>
               </div>
             )}
-            <div className="set-field">
-              <span className="set-label">上游渠道</span>
-              <select
-                className="ctrl"
-                title="渠道"
-                value={info.channel || ""}
-                onChange={(e) => store.applyModel(info.session_id, e.target.value, model)}
-              >
-                {(info.backend === "openclaw"
-                  ? [["", "不适用"]]
-                  : [["", "机器默认"]]
-                ).concat(
-                  store.channelsForBackend(info.backend).map((c) => [c.name, c.label || c.name] as [string, string]),
-                ).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-              </select>
-            </div>
             <div className="set-field model">
               <span className="set-label">模型</span>
               <div className="set-row">
@@ -162,10 +164,10 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                   title={model || "模型"}
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") store.applyModel(info.session_id, info.channel || "", model); }}
+                  onKeyDown={(e) => { if (e.key === "Enter") store.applyModel(info.session_id, "", model); }}
                   list="codebuddy-models-head"
                 />
-                <button className="ghost" onClick={() => store.applyModel(info.session_id, info.channel || "", model)}>应用</button>
+                <button className="ghost" onClick={() => store.applyModel(info.session_id, "", model)}>应用</button>
                 {cb && codebuddyModels.length > 0 && (
                   <datalist id="codebuddy-models-head">
                     {codebuddyModels.map((m) => <option key={m} value={m} />)}
@@ -174,7 +176,7 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
               </div>
             </div>
           </div>
-          <div className="set-hint">权限改动即时下发；切换渠道或改模型会合并为一次 set_model 应用到当前会话。</div>
+          <div className="set-hint">权限改动即时下发；选模型即生效：渠道由服务端按模型自动匹配，只影响当前会话。</div>
         </div>
       ) : null}
     </>

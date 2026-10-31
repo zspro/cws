@@ -55,6 +55,7 @@ class Store {
     defaultChannel: "",
     backends: null,
     projects: [],
+    models: [],
     projectsRoot: "",
     modal: null,
     toasts: [],
@@ -178,6 +179,7 @@ class Store {
       this.send("channels.list");
       this.send("sessions.list");
       this.send("projects.list");
+      this.send("models.list", { backend: "codebuddy" });
       this.send("kx.history");
       this.send("sessions.sync", { marks: this.marks, attach: this.state.current || undefined });
       // 直达会话：?sid=xxx 自动打开
@@ -456,6 +458,16 @@ class Store {
         s.info.closed = true;
         s.info.queued = false;
         if (this.state.current === f.session_id) this.pushSys(s, "会话已关闭：" + (f.reason || ""));
+        this.touch();
+        break;
+      }
+      case "session_model": {
+        const s0 = f.session_id ? this.state.sessions.get(f.session_id) : null;
+        if (s0 && typeof f.model === "string") { s0.info.model = f.model; this.touch(); }
+        break;
+      }
+      case "models": {
+        this.state.models = Array.isArray(f.models) ? f.models : [];
         this.touch();
         break;
       }
