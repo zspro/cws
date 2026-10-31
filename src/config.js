@@ -71,7 +71,7 @@ export const SERVER_VERSION = (() => {
     return '';
   }
 })();
-export const SERVER_CAPS = ['frame_auth', 'hello', 'backends', 'remark'];
+export const SERVER_CAPS = ['frame_auth', 'hello', 'backends', 'remark', 'projects'];
 // 无 token 升级进来（v0.3 路径）的连接，等首帧 auth 的窗口；超时未鉴权即断。
 // URL ?token= 鉴权（v0.2，WebUI/QQ 在用）不受影响。
 export const FRAME_AUTH_TIMEOUT_S = Number(cfg.frame_auth_timeout_s ?? 10);
