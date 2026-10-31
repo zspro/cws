@@ -79,16 +79,8 @@ const MsgItem = memo(function MsgItem({ m }: { m: Msg }) {
     );
   }
   if (m.kind !== "ask") return null;
-  // 已答复的卡收成一行：历史还在，但不再占屏
-  if (m.answered) {
-    const isQ2 = (m.ask.kind || "") === "question";
-    return (
-      <div className={"ask-done" + (m.answered === "deny" ? " denied" : "")}>
-        <span className="ask-done-mark">{m.answered === "deny" ? "×" : "√"}</span>
-        <span className="ask-done-txt">{isQ2 ? "已提交回答" : "已允许"} · {m.ask.tool_name || (isQ2 ? "提问" : "权限")}</span>
-      </div>
-    );
-  }
+  // 已答复的卡直接不渲染（笔端同款）：答完就消失，不占屏也不留残留行
+  if (m.answered) return null;
   return <AskCard ask={m.ask} answered={m.answered} sid={m.ask.session_id} />;
 });
 
