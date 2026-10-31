@@ -150,10 +150,17 @@ export function extractPtcAsk(code) {
   return { at: m.index, questions: qs };
 }
 
-/** 把 AskUserQuestion({...}) 改写成 (async () => ({questions, answers}))(...) */
+/** 把 AskUserQuestion({...}) 改写成返回 {questions, answers} 的表达式 */
+// 注意两点（都是线上踩出来的）：
+// 1) 裸对象不行：await {...} 会被解析成块 → Unexpected token '{'，必须包一层 IIFE；
+// 2) 模型常常只写 `await AskUserQuestion({...})` 不写 return，单元格结果就丢了
+//    （REPL 不做末表达式返回）→ 前面挂个常量、末尾补一句 return 兜住。
 export function rewritePtcAsk(code, at, questions, answers) {
-  const iife = '(async () => (' + JSON.stringify({ questions, answers }) + '))';
-  return code.slice(0, at) + iife + code.slice(at + 'AskUserQuestion'.length);
+  const payload = JSON.stringify({ questions, answers });
+  const iife = '(async () => __cwsPtcAsk)';
+  return 'const __cwsPtcAsk = ' + payload + ';' + String.fromCharCode(10)
+    + code.slice(0, at) + iife + code.slice(at + 'AskUserQuestion'.length) + String.fromCharCode(10)
+    + 'return __cwsPtcAsk;';
 }
 
 export class CodebuddySession extends BaseSession {
