@@ -553,6 +553,9 @@ export class Bridge {
         }
         break;
       }
+      case 'switch_backend':
+        await this.onSwitchBackend(ws, params, echo);
+        break;
       case 'stop': {
         const s = this.sessions.get(params.session_id);
         if (!s || s.closed) {
@@ -723,6 +726,61 @@ export class Bridge {
       await this._wsSend(ws, { post_type: 'send_ack', session_id: sid, echo });
     }
     await s.startTurn(params.text || '', echo, params.images);
+  }
+
+  /**
+   * 会话后端切换：只在 codebuddy ↔ codebuddy-tui 之间。
+   * 两者共用同一个 CLI transcript（cli_uuid 由 sid 派生，两个后端一致），
+   * 所以换进程后直接 --resume 就能接回原对话——用于「对话视图里 ptc 弹不出
+   * 问卡，一键切到终端让 TUI 当审批宿主」。
+   */
+  async onSwitchBackend(ws, params, echo) {
+    const sid = params.session_id;
+    const target = String(params.backend || '');
+    const s = this.sessions.get(sid);
+    if (!s || s.closed) {
+      await this._wsSend(ws, { post_type: 'error', code: 'unknown_session', session_id: sid, echo });
+      return;
+    }
+    const pair = ['codebuddy', 'codebuddy-tui'];
+    if (!pair.includes(s.backend) || !pair.includes(target) || s.backend === target) {
+      await this._wsSend(ws, {
+        post_type: 'error', code: 'bad_backend_switch', session_id: sid, echo,
+        message: '仅支持 codebuddy ↔ codebuddy-tui 切换',
+      });
+      return;
+    }
+    if (s.turn_active) {
+      await this._wsSend(ws, {
+        post_type: 'error', code: 'busy', session_id: sid, echo,
+        message: 'turn in progress：等这一轮结束再切',
+      });
+      return;
+    }
+    const from = s.backend;
+    // 静默退场：不广播 session_closed（会话本身没结束），但要停进程/定时器
+    s.closed = true;
+    try { s._cancelTurnTimer && s._cancelTurnTimer(); } catch { /* ignore */ }
+    try { await s._killProcess(); } catch { /* ignore */ }
+    const ns = makeSession(this, sid, ws, {
+      backend: target,
+      resume: true,
+      permissionMode: s.permission_mode,
+      agentMode: s.agent_mode,
+      channel: s.channel,
+      model: s.model_name,
+    });
+    // 内存流水直接接手（磁盘同一份，省一次重读）
+    ns.turn_log = s.turn_log;
+    ns._msg_seq = s._msg_seq;
+    ns._disk_log_count = s._disk_log_count;
+    ns.pending_echo = null;
+    ns.ready_announced = true;
+    ns._saveSessMeta(); // backend 落盘，重启后仍记得
+    this.sessions.set(sid, ns);
+    log('backend_switch', { session_id: sid, from, to: target });
+    await this._announceReady(ns, echo);
+    if (target === 'codebuddy-tui') await ns.start();
   }
 
   async newSession(ws, params, echo) {

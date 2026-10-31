@@ -2,7 +2,7 @@
 // 卡西管理台视图时标题固定为"卡西"；会话视图同旧（设置卡收在齿轮里）。
 import { useEffect, useState } from "react";
 import { AGENT_OPTIONS, PERM_OPTIONS, store, useStore } from "../store";
-import { IconBridge, IconGear, IconMenu, IconPlus, IconStop, IconTrash, IconWatch } from "../icons";
+import { IconBridge, IconGear, IconMenu, IconPlus, IconStop, IconTerminal, IconTrash, IconWatch } from "../icons";
 
 export default function ChatHead({ onNav }: { onNav: () => void }) {
   const st = useStore();
@@ -46,6 +46,20 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
               {info.turn_active && (
                 <button className="stop-btn" onClick={() => store.stop()}>
                   <IconStop size={13} /> 停止
+                </button>
+              )}
+              {(info.backend === "codebuddy" || info.backend === "codebuddy-tui") && (
+                <button
+                  className={"ghost ch-icon" + (info.backend === "codebuddy-tui" ? " on" : "")}
+                  title={info.backend === "codebuddy-tui"
+                    ? "当前是终端模式 · 点一下切回对话视图"
+                    : "切到终端模式 · 问卡 / 权限框 / 斜杠命令都在终端里"}
+                  onClick={() => store.switchBackend(
+                    info.session_id,
+                    info.backend === "codebuddy-tui" ? "codebuddy" : "codebuddy-tui",
+                  )}
+                >
+                  <IconTerminal size={15} />
                 </button>
               )}
               <button

@@ -135,6 +135,9 @@ xterm.js 镜像同一块屏幕，键盘原样写回——问卡、权限框、�
 - 输出按 24ms 合帧广播，回放快照保留最近 200K 字符；进程退出发 `term_exit`，
   下次输入自动重新拉起。
 - 发图不走该后端（TUI 没有图片入参），请在终端里用文件路径引用。
+- **与 `codebuddy` 可互切**（`switch_backend`，顶栏终端图标 / 输入框上方提示）：
+  两者共用同一份 CLI transcript，切换 = 换进程 + `--resume`，上下文不丢；用于
+  「对话视图里 ptc 弹不出问卡，一键切到终端」。运行中的轮次会拒绝切换。
 
 ## WebUI
 
@@ -152,7 +155,7 @@ xterm.js 镜像同一块屏幕，键盘原样写回——问卡、权限框、�
 客户端→桥：`ping / new_session / sessions.sync / send / stop / drop_session /
 sessions.list / ask_reply / set_permission / set_model / channels.list / channels.save /
 channels.delete / channels.set_default / channel.test / channel.models /
-term_input / term_resize / term_attach`（均带 echo 回传）。
+term_input / term_resize / term_attach / switch_backend`（均带 echo 回传）。
 
 桥→客户端 post_type：`session_ready / session_queued / send_ack / stop_ack /
 user_msg / cc_msg / delta / thinking / tool_activity / ask / ask_replied / final /

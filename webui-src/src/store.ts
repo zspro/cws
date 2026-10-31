@@ -202,6 +202,10 @@ class Store {
   termAttach(sid: string, cols: number, rows: number) {
     this.send("term_attach", { session_id: sid, cols, rows });
   }
+  /** codebuddy ↔ codebuddy-tui：同一个 CLI transcript，换进程后 --resume 续聊。 */
+  switchBackend(sid: string, backend: Backend) {
+    this.send("switch_backend", { session_id: sid, backend });
+  }
 
   // ---------- 会话动作 ----------
   openChat(sid: string) {

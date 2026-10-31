@@ -467,3 +467,34 @@ CLI 2.179 的 commander 定义里 `--tool-mode <cli|ptc|minimal|create>` 才校�
 
 - TUI 后端不发图（终端没有图片入参），走该后端时 `send` 带图会回 `no_image_support`；
 - Windows 未测（node-pty 平台二进制另装）。
+
+## 对话 ↔ 终端互切（switch_backend，2026-10-31）
+
+### 动机
+
+用户的生产会话是 headless `codebuddy`（ptc）：REPL 里的 AskUserQuestion 没有宿主，
+问卡弹不出来；但会话后端是创建时定死的，不能直接变 TUI。两个后端共用同一个
+`cli_uuid`（`uuid5(sid)`），CLI transcript 也是同一份，所以换进程 + `--resume`
+就能原地切换、上下文不丢。
+
+### 实现
+
+- `src/bridge.js`：新增 `switch_backend {session_id, backend}`，只允许
+  `codebuddy ↔ codebuddy-tui`；运行中的轮次回 `busy` 拒绝。旧会话走
+  `close(reason, notify=false)` 静默退场（不广播 `session_closed`），新会话继承
+  `turn_log`/`_msg_seq`、权限/渠道/模型/agent，`_saveSessMeta()` 落盘新 backend。
+- WebUI：顶栏终端图标一键互切；`composer` 上方在 `codebuddy + ptc/minimal` 时
+  提示「问卡弹不出来」并给「切到终端」链接。
+- TUI 侧补 closed 守卫：切后端导致的进程退出不再广播 `term_exit`，残留的
+  `term_data` 也不再推。
+
+### 验收（真 CLI，:8711）
+
+- headless 发「只回复：一号测试」→ `final 一号测试`；`switch_backend
+  codebuddy-tui` → `session_ready(backend=codebuddy-tui)` + `term_ready`，终端里
+  直接看到上一轮的 `> 只回复：一号测试 / ● 一号测试`（resume 生效）— PASS。
+- 终端里 `send`「二号终端」→ 渲染 `● 二号终端`；再切回 `codebuddy` → `final
+  三号回归` — PASS（三轮同一 transcript）。
+- 浏览器：新建 `codebuddy` 会话出现提示条 → 点顶栏终端图标 → `.term-box` 出现 →
+  点回对话 → 聊天视图恢复、提示条回来，零 console 报错 — PASS。
+- 回归（mock :18711）：13 场景全 PASS。

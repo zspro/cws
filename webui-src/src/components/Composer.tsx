@@ -24,6 +24,10 @@ export default function Composer() {
 
   if (!s) return null;
   const running = !!s.info.turn_active;
+  // ptc/minimal 的 REPL 嵌套审批在 headless 里没有宿主：这个会话弹不出问卡，
+  // 只能切到 TUI（终端自己就是审批宿主）。
+  const askUnreachable = s.info.backend === "codebuddy"
+    && ["ptc", "minimal"].includes(s.info.agent_mode || "ptc");
 
   const autoGrow = () => {
     const ta = taRef.current;
@@ -70,6 +74,12 @@ export default function Composer() {
 
   return (
     <div className="composer-wrap">
+      {askUnreachable && (
+        <div className="tui-tip">
+          <span>PTC / 极简模式的问卡、权限框在对话视图里弹不出来</span>
+          <button onClick={() => store.switchBackend(s.info.session_id, "codebuddy-tui")}>切到终端</button>
+        </div>
+      )}
       <div
         className={"composer" + (dragOver ? " drag" : "")}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}

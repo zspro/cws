@@ -119,6 +119,7 @@ export class CodebuddyTuiSession extends BaseSession {
         term.signalCode = signal ?? null;
         log('tui_exit', { session_id: this.id, code: exitCode, signal });
         this._flushPending();
+        if (this.closed) return; // 切后端导致的退出：会话还活着，别报 exit
         this.sendWs({ post_type: 'term_exit', session_id: this.id, code: exitCode, signal: signal ?? null })
           .catch(() => {});
       });
@@ -159,6 +160,7 @@ export class CodebuddyTuiSession extends BaseSession {
     if (!this._pending) return;
     const data = this._pending;
     this._pending = '';
+    if (this.closed) return; // 已切后端/关闭：别再往 WS 推旧进程的字节
     this.sendWs({ post_type: 'term_data', session_id: this.id, data }).catch(() => {});
   }
 
