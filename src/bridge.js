@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { BaseSession } from './base-session.js';
+import { listProjects, projectById, createProject, updateProject, deleteProject } from './projects.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
 import { CodebuddySession } from './codebuddy-session.js';
@@ -294,6 +295,7 @@ export class Bridge {
       const s = makeSession(this, sid, ws, {
         permissionMode: item.permissionMode, channel: item.channel,
         model: item.model, backend: item.backend, agentMode: item.agentMode,
+        project: item.project || '', cwd: item.cwd || null,
       });
       this.sessions.set(sid, s);
       s.pending_echo = echo;
@@ -615,6 +617,28 @@ export class Bridge {
       case 'sessions.list':
         await this._wsSend(ws, { post_type: 'sessions', sessions: this.sessionsSnapshot(), echo });
         break;
+      // ---- 项目（工作目录）：一个目录挂多个会话 ----
+      case 'projects.list':
+        await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), echo });
+        break;
+      case 'projects.create': {
+        const r = createProject({ name: params.name, path: params.path, create: params.create !== false });
+        if (r.error) await this._wsSend(ws, { post_type: 'error', code: 'bad_project', message: r.error, echo });
+        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), project: r.project, echo });
+        break;
+      }
+      case 'projects.update': {
+        const r = updateProject(params.id, { name: params.name, path: params.path, create: params.create !== false });
+        if (r.error) await this._wsSend(ws, { post_type: 'error', code: 'bad_project', message: r.error, echo });
+        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), project: r.project, echo });
+        break;
+      }
+      case 'projects.delete': {
+        const r = deleteProject(params.id);
+        if (r.error) await this._wsSend(ws, { post_type: 'error', code: 'bad_project', message: r.error, echo });
+        else await this._wsSend(ws, { post_type: 'projects', projects: listProjects(), deleted: r.project.id, echo });
+        break;
+      }
       case 'channels.list':
         await this._wsSend(ws, {
           post_type: 'channels', channels: this.channelsSnapshot(),
@@ -850,6 +874,18 @@ export class Bridge {
         : (params.backend === 'codebuddy-tui' ? 'codebuddy-tui'
           : (params.backend === 'codebuddy' ? 'codebuddy'
             : (params.backend === 'claude' ? 'claude' : null))));
+    // 项目（工作目录）：params.project = 项目 id；不传 = 老行为（cwd 就是 workspaces/<sid>）
+    let projectId = '';
+    let projectCwd = null;
+    if (params.project) {
+      const p = projectById(String(params.project));
+      if (!p) {
+        await this._wsSend(ws, { post_type: 'error', code: 'bad_project', message: '项目不存在', echo });
+        return;
+      }
+      projectId = p.id;
+      projectCwd = p.path;
+    }
     const existing = this.sessions.get(sid);
     if (existing && !existing.closed) {
       // same-name reconnect = takeover: rebind ws, resync identity, never restart
@@ -935,7 +971,7 @@ export class Bridge {
     if (params.resume) {
       const s = makeSession(this, sid, ws, {
         resume: true, permissionMode: params.permission_mode,
-        channel, model, backend, agentMode,
+        channel, model, backend, agentMode, project: projectId, cwd: projectCwd,
         gateway: params.gateway, remoteKey: params.remote_key, agentId: params.agent,
       });
       this.sessions.set(sid, s);
@@ -964,6 +1000,7 @@ export class Bridge {
       this.queue.push({
         sid, ws, echo, ts: now(),
         permissionMode: params.permission_mode, channel, model, backend, agentMode,
+        project: projectId, cwd: projectCwd,
       });
       await this._wsSend(ws, {
         post_type: 'session_queued', session_id: sid, position: this.queue.length, echo,
@@ -974,6 +1011,7 @@ export class Bridge {
     const s = makeSession(this, sid, ws, {
       permissionMode: params.permission_mode, channel, model, backend, agentMode,
       gateway: params.gateway, remoteKey: params.remote_key, agentId: params.agent,
+      project: projectId, cwd: projectCwd,
     });
     this.sessions.set(sid, s);
     s.pending_echo = echo;
@@ -1067,6 +1105,7 @@ export class Bridge {
         agent_mode: s.agent_mode || null,
         title: s.turnTitle(),
         remark: s.remark || '',
+        project: s.project_id || '',
       });
     }
     for (const q of this.queue) {

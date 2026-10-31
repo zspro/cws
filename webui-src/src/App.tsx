@@ -8,7 +8,7 @@ import ChatHead from "./components/ChatHead";
 import ChatView from "./components/ChatView";
 import Composer from "./components/Composer";
 import Toasts from "./components/Toasts";
-import { BackendsPanel, ChannelsPanel, NewSessionPanel, RemarkPanel } from "./components/Panels";
+import { BackendsPanel, ChannelsPanel, NewSessionPanel, ProjectPanel, RemarkPanel } from "./components/Panels";
 import KxView from "./components/KxView";
 import TermView from "./components/TermView";
 import UpdatePanel from "./components/UpdatePanel";
@@ -122,7 +122,10 @@ export default function App() {
       {st.modal === "update" && <UpdatePanel />}
       {(() => {
         const m = st.modal;
-        return m !== null && typeof m === "object" && m.kind === "remark" ? <RemarkPanel sid={m.sid} /> : null;
+        if (m === null || typeof m !== "object") return null;
+        if (m.kind === "remark") return <RemarkPanel sid={m.sid} />;
+        if (m.kind === "project") return <ProjectPanel project={m.project} />;
+        return null;
       })()}
       <Toasts />
     </>

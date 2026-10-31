@@ -54,6 +54,7 @@ class Store {
     channels: [],
     defaultChannel: "",
     backends: null,
+    projects: [],
     modal: null,
     toasts: [],
     update: this.update,
@@ -175,6 +176,7 @@ class Store {
       this.state.loginErr = "";
       this.send("channels.list");
       this.send("sessions.list");
+      this.send("projects.list");
       this.send("kx.history");
       this.send("sessions.sync", { marks: this.marks, attach: this.state.current || undefined });
       // 直达会话：?sid=xxx 自动打开
@@ -218,9 +220,28 @@ class Store {
     this.send("new_session", { session_id: sid, permission_mode: s.info.permission_mode });
   }
 
+  /** 新建会话弹窗预选的项目 id（点某项目的「新建任务」时设置） */
+  newSessionProject = "";
+  setNewProject(id: string) { this.newSessionProject = id || ""; this.touch(); }
+
+  // ---------- 项目（工作目录） ----------
+  loadProjects() { this.send("projects.list"); }
+
+  createProject(name: string, path: string) {
+    this.send("projects.create", { name: name.trim(), path: path.trim() });
+  }
+
+  updateProject(id: string, patch: { name?: string; path?: string }) {
+    this.send("projects.update", { id, ...patch });
+  }
+
+  deleteProject(id: string) {
+    this.send("projects.delete", { id });
+  }
+
   createSession(fields: {
     session_id?: string; backend: Backend; channel?: string; model?: string;
-    permission_mode: string; agent_mode?: string; gateway?: string; remote_key?: string;
+    permission_mode: string; agent_mode?: string; gateway?: string; remote_key?: string; project?: string;
   }) {
     if (!this.api) return;
     const echo = this.api.newEcho();
@@ -232,6 +253,7 @@ class Store {
       permission_mode: fields.permission_mode,
       agent_mode: fields.agent_mode || undefined,
       gateway: fields.gateway?.trim() || undefined, remote_key: fields.remote_key?.trim() || undefined,
+      project: fields.project || undefined,
       echo,
     });
     // 指定 sid 的创建直接进入（session_ready 会带着 new:echo 再确认一次）
@@ -357,6 +379,11 @@ class Store {
           const s = this.sess(it.session_id);
           Object.assign(s.info, it);
         }
+        this.touch();
+        break;
+      }
+      case "projects": {
+        this.state.projects = Array.isArray(f.projects) ? f.projects : [];
         this.touch();
         break;
       }

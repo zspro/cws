@@ -40,8 +40,11 @@ export class BaseSession {
     this.cli_uuid = uuid5(UUID_NAMESPACE_URL, 'cc-bridge:' + sid);
     this.ws = ws;
     this.pending_echo = null;
-    this.cwd = path.join(WORKSPACES, sid);
-    fs.mkdirSync(this.cwd, { recursive: true });
+    // 会话数据目录（turnlog.jsonl / sess.json）始终按 sid 隔离——同一项目下
+    // 多个会话共用 cwd 干活，但各自的流水互不污染。cwd 在下面 meta 读完后再定。
+    this.data_dir = path.join(WORKSPACES, sid);
+    this.cwd = this.data_dir;
+    fs.mkdirSync(this.data_dir, { recursive: true });
     this.proc = null;
     this.turn_active = false;
     this.turn_echo = null;
@@ -54,6 +57,15 @@ export class BaseSession {
     this.pending_asks = new Map(); // ask_id -> {request_id, tool_name, ask_frame, timer}
     this.created_at = now();
     const meta = this._loadSessMeta();
+    // 项目（工作目录）：opts 优先 > sess.json 记录；cwd 指向项目目录，失败退回 data_dir
+    this.project_id = opts.project || meta.project || '';
+    const wantCwd = opts.cwd || meta.cwd || '';
+    if (wantCwd && path.isAbsolute(wantCwd)) {
+      try {
+        fs.mkdirSync(wantCwd, { recursive: true });
+        this.cwd = wantCwd;
+      } catch { /* 目录建不出来：退回会话目录，别让整个会话起不来 */ }
+    }
     // permission level: launch_mode = process start param; permission_mode = live value
     this.launch_mode = opts.permissionMode || meta.permission_mode || PERMISSION_MODE;
     this.permission_mode = this.launch_mode;
@@ -91,11 +103,11 @@ export class BaseSession {
 
   // ---------- turn_log persistence ----------
   _turnlogPath() {
-    return path.join(this.cwd, 'turnlog.jsonl');
+    return path.join(this.data_dir, 'turnlog.jsonl');
   }
 
   _sessMetaPath() {
-    return path.join(this.cwd, 'sess.json');
+    return path.join(this.data_dir, 'sess.json');
   }
 
   _logTurn(role, text, extra = null) {
@@ -202,6 +214,8 @@ export class BaseSession {
           backend: this.backend,
           thread_id: this.thread_id || '',
           remark: this.remark || '',
+          project: this.project_id || '',
+          cwd: this.cwd === this.data_dir ? '' : this.cwd,
         }),
       );
     } catch { /* ignore */ }

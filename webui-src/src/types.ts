@@ -102,6 +102,8 @@ export interface SessionInfo {
   permission_mode: string;
   title?: string;
   remark?: string;
+  /** 所属项目 id（null/空 = 未归类，cwd 为 workspaces/<sid>） */
+  project?: string;
   queued?: boolean;
   queue_position?: number;
   closed?: boolean;
@@ -133,13 +135,22 @@ export interface Toast {
   kind: "" | "ok" | "err";
 }
 
+/** 项目 = 一个工作目录，可挂多个会话（各自 sid、共享 cwd） */
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  created?: number;
+}
+
 export type ModalState =
   | null
   | "new"
   | "channels"
   | "backends"
   | "update"
-  | { kind: "remark"; sid: string };
+  | { kind: "remark"; sid: string }
+  | { kind: "project"; project?: Project };
 
 /** update_state 帧消化后的自更新状态 */
 export interface UpdateState {
@@ -177,6 +188,7 @@ export interface AppState {
   channels: Channel[];
   defaultChannel: string;
   backends: BackendsInfo | null;
+  projects: Project[];
   modal: ModalState;
   toasts: Toast[];
   update: UpdateState;

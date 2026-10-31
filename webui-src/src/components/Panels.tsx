@@ -2,7 +2,7 @@
 // 布局沿用 kawork 的 overlay + panel 结构。
 import { useEffect, useState } from "react";
 import { AGENT_OPTIONS, PERM_OPTIONS, store, useStore } from "../store";
-import type { Backend, Channel } from "../types";
+import type { Backend, Channel, Project } from "../types";
 import { IconX } from "../icons";
 
 export function Shell({ title, onClose, children, wide }: {
@@ -33,6 +33,7 @@ export function NewSessionPanel() {
   const [gateway, setGateway] = useState(
     st.backends?.gateways[0]?.name || "openclaw");
   const [remote, setRemote] = useState("");
+  const [project, setProject] = useState(store.newSessionProject || "");
 
   useEffect(() => {
     setPerm((PERM_OPTIONS[backend] || PERM_OPTIONS.claude)[0][0]);
@@ -45,6 +46,12 @@ export function NewSessionPanel() {
 
   return (
     <Shell title="新建会话" onClose={() => store.setModal(null)}>
+      <label>项目（工作目录）
+        <select value={project} onChange={(e) => setProject(e.target.value)}>
+          <option value="">（不归属项目 · 独立目录）</option>
+          {(st.projects || []).map((pr) => <option key={pr.id} value={pr.id}>{pr.name} · {pr.path}</option>)}
+        </select>
+      </label>
       <label>会话 ID（留空自动生成）<input value={sid} onChange={(e) => setSid(e.target.value)} placeholder="mychat" /></label>
       <label>后端
         <select value={backend} onChange={(e) => setBackend(e.target.value as Backend)}>
@@ -98,7 +105,7 @@ export function NewSessionPanel() {
       <div className="panel-actions">
         <button className="ghost" onClick={() => store.setModal(null)}>取消</button>
         <button className="primary" onClick={() => store.createSession({
-          session_id: sid, backend, channel, model, permission_mode: perm, agent_mode: agent || undefined, gateway, remote_key: remote,
+          session_id: sid, backend, channel, model, permission_mode: perm, agent_mode: agent || undefined, gateway, remote_key: remote, project: project || undefined,
         })}>创建</button>
       </div>
     </Shell>
@@ -359,6 +366,39 @@ export function RemarkPanel({ sid }: { sid: string }) {
       <div className="panel-actions">
         <button className="ghost" onClick={() => store.setModal(null)}>取消</button>
         <button className="primary" onClick={() => { store.setRemark(sid, text); store.setModal(null); }}>保存</button>
+      </div>
+    </Shell>
+  );
+}
+
+// ---------- 项目（工作目录）新建/编辑 ----------
+export function ProjectPanel({ project }: { project?: Project }) {
+  const editing = !!project;
+  const [name, setName] = useState(project?.name || "");
+  const [dir, setDir] = useState(project?.path || "");
+  const submit = () => {
+    if (!dir.trim()) { store.toast("工作目录必填", "err"); return; }
+    if (editing && project) store.updateProject(project.id, { name: name.trim(), path: dir.trim() });
+    else store.createProject(name, dir);
+    store.setModal(null);
+  };
+  return (
+    <Shell title={editing ? "项目设置" : "新建项目"} onClose={() => store.setModal(null)}>
+      <label>名称（留空 = 用目录名）<input value={name} onChange={(e) => setName(e.target.value)} placeholder="PStore" /></label>
+      <label>工作目录（绝对路径，不存在会自动创建）
+        <input value={dir} onChange={(e) => setDir(e.target.value)} placeholder="/my/run/pstore" />
+      </label>
+      <div className="panel-actions">
+        {editing && project && (
+          <button className="ghost danger" onClick={() => {
+            if (confirm("解除项目 " + project.name + "？不会删除磁盘目录，会话归到未分类")) {
+              store.deleteProject(project.id);
+              store.setModal(null);
+            }
+          }}>删除项目</button>
+        )}
+        <button className="ghost" onClick={() => store.setModal(null)}>取消</button>
+        <button className="primary" onClick={submit}>{editing ? "保存" : "创建"}</button>
       </div>
     </Shell>
   );

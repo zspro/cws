@@ -954,3 +954,16 @@ body {
   .term-wrap { padding: 8px 10px 10px; }
   .term-hint { display: none; }
 }
+
+/* ---------- 项目分组侧栏 ---------- */
+.proj-title { font-size: 11px; color: var(--ink-faint); padding: 4px 8px 6px; letter-spacing: .04em; }
+.proj-group { margin-bottom: 6px; }
+.proj-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 8px; color: var(--ink-dim); }
+.proj-head:hover { background: var(--tint); }
+.proj-ico { font-size: 10px; opacity: .6; }
+.proj-name { flex: 1; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-count { font-size: 11px; color: var(--ink-faint); }
+.proj-group .sess-item { margin-left: 10px; }
+.sess-item.new-task { color: var(--ink-dim); }
+.sess-item.new-task .sess-title { font-size: 13px; }
+.ghost.danger { color: #e0705f; }
