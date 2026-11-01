@@ -36,7 +36,7 @@ export interface BackendsInfo {
   default_backend: Backend;
   gateways: Gateway[];
   /** 官方服务模型表（服务端从 CLI 内省/静态快照得到；claude/codex 暂无来源） */
-  models?: { codebuddy?: string[] };
+  models?: { codebuddy?: string[] } & Record<string, string[] | undefined>;
   /** 内置 agent 模式表（--agent 取值；仅 codebuddy 提供） */
   agents?: { codebuddy?: string[] };
 }

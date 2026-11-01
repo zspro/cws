@@ -56,7 +56,7 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                 const push = (g: { channel: string; label: string; models: string[] }, m?: string | null) => {
                   if (m && !g.models.includes(m)) g.models.push(m);
                 };
-                const official = { channel: "", label: "官方服务", models: [] as string[] };
+                const official = { channel: "", label: ({ claude: "Claude", codex: "Codex", codebuddy: "CodeBuddy", "codebuddy-tui": "CodeBuddy" } as Record<string, string>)[info.backend] + " 内置", models: [] as string[] };
                 for (const m of (((st.backends?.models as Record<string, string[]> | undefined)?.[info.backend]) || [])) push(official, m);
                 groups.push(official);
                 for (const c of store.channelsForBackend(info.backend)) {

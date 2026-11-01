@@ -180,6 +180,7 @@ class Store {
       this.send("sessions.list");
       this.send("projects.list");
       this.send("models.list", { backend: "codebuddy" });
+      this.send("backends.list"); // 内置模型表（codebuddy --help 解析），会话模型下拉的「内置」组
       this.send("kx.history");
       this.send("sessions.sync", { marks: this.marks, attach: this.state.current || undefined });
       // 直达会话：?sid=xxx 自动打开
@@ -529,7 +530,7 @@ class Store {
           gateways: (f.gateways || []).map((g: Frame) => ({
             name: g.name, url: g.url, agent: g.agent, token_tail: g.token_tail,
           })),
-          models: { codebuddy: (f.models && f.models.codebuddy) || [] },
+          models: { codebuddy: [], ...((f.models && typeof f.models === "object") ? f.models : {}) },
           agents: { codebuddy: (f.agents && f.agents.codebuddy) || [] },
         };
         this.touch();

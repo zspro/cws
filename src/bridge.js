@@ -2325,8 +2325,8 @@ export class Bridge {
 
   /** 各后端【官方服务】（机器默认，无渠道）的模型表——codebuddy 从
    *  `codebuddy --help` 的 --model 行实时解析（CLI 更新名单自动跟随），
-   *  解析失败回落静态快照（2026-10-25 实机抓取）。claude/codex 官方名单
-   *  无可靠的 CLI 内省来源，暂不提供（走渠道拉取）。结果缓存进程级。 */
+   *  解析失败回落静态快照（2026-10-25 实机抓取）。claude 给 --help 里的
+   *  模型别名；codex 无可靠的 CLI 内省来源，暂不提供（走渠道拉取）。结果缓存进程级。 */
   async officialModels() {
     if (this._officialModels) return this._officialModels;
     const fallbackCodebuddy = [
@@ -2347,7 +2347,10 @@ export class Bridge {
       if (m) codebuddy = m[1].split(',').map((s) => s.trim()).filter(Boolean);
     } catch {}
     if (!codebuddy.length) codebuddy = fallbackCodebuddy;
-    this._officialModels = { codebuddy };
+    // claude：--help 只列别名示例（'fable', 'opus', 'sonnet'），无完整名单；
+    // 别名由 CLI 解析到当前最新版，比写死全名耐久
+    const claude = ['fable', 'opus', 'sonnet', 'haiku'];
+    this._officialModels = { codebuddy, 'codebuddy-tui': codebuddy, claude };
     return this._officialModels;
   }
 
