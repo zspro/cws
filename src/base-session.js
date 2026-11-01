@@ -394,7 +394,8 @@ export class BaseSession {
     const data = JSON.stringify(obj);
     if (broadcast) {
       for (const c of this.bridge.conns) {
-        if (c.readyState === c.OPEN) {
+        // 未完成首帧鉴权的连接（10s 窗口内）不收广播
+        if (c.readyState === c.OPEN && c._authed !== false) {
           try {
             c.send(data);
           } catch { /* ignore */ }
@@ -464,7 +465,9 @@ export class BaseSession {
 
   // ---------- turn entry (backend-specific: startTurn/abort) ----------
   async startTurn(text, echo, images, opts = {}) {
-    if (this.turn_active) {
+    // _turn_starting 盖住 turn_active 置位前的 await 窗口（_ensureProcess 可达 10s+）：
+    // 两端同时发送时两条都能通过检查，同一 CLI 被写进两轮
+    if (this.turn_active || this._turn_starting) {
       await this.sendWs({ post_type: 'error', session_id: this.id, code: 'busy', message: 'turn in progress', echo });
       return;
     }
@@ -476,7 +479,12 @@ export class BaseSession {
         message: '该后端暂不支持发图（仅 Claude / CodeBuddy 支持）', echo });
       return;
     }
-    await this._ensureProcess();
+    this._turn_starting = true;
+    try {
+      await this._ensureProcess();
+    } finally {
+      this._turn_starting = false;
+    }
     this.text_buf = [];
     this.thinking_chars = 0;
     this.turn_active = true;

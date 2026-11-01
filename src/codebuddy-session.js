@@ -14,6 +14,9 @@
 //   4. 复活用 --resume <sid> --resume-create-missing（历史被清时同 id 重开，不失败）；
 //      首启用 --session-id 固定会话 ID，init 事件回读落盘兜底。
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
@@ -80,6 +83,63 @@ const _FILE_LINK_GUIDANCE =
   '不要用代码块贴文件内容。发布成功后，把返回的下载链接单独占一行、原样写进回复正文：' +
   '不要放进代码围栏、不要加反引号、不要加粗、不要和别的字挤在同一行——' +
   '客户端靠这一行渲染成可点的文件下载卡片，格式错了用户就点不到。';
+
+// REPL 内部工具调用（ptc/minimal）：stream-json 只给整块 code + 合并结果，看不到
+// 里面调了哪些工具。CLI 的会话转录里 function_call_result.providerData.toolResult
+// .replPresentation.calls 有逐个调用的 name/rawInput/status/durationMs（2.179 实测，
+// 转录先于 stream 的 tool_result 帧落盘）。这里从转录尾部捞对应 callId 那行。
+const TRANSCRIPT_ROOT = path.join(os.homedir(), '.codebuddy', 'projects');
+const TRANSCRIPT_TAIL = 4 * 1024 * 1024;
+const REPL_CALLS_MAX = 30;
+
+function _findTranscript(cliSid) {
+  if (!cliSid || !/^[A-Za-z0-9-]{8,64}$/.test(cliSid)) return null;
+  let dirs;
+  try { dirs = fs.readdirSync(TRANSCRIPT_ROOT); } catch { return null; }
+  for (const d of dirs) {
+    const p = path.join(TRANSCRIPT_ROOT, d, cliSid + '.jsonl');
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** 转录尾部倒查 callId 对应的 REPL 结果行，返回内部调用列表（找不到 → null） */
+export function readReplCalls(file, callId) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, TRANSCRIPT_TAIL);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    const needle = '"callId":"' + callId + '"';
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const ln = lines[i];
+      if (!ln.includes(needle) || !ln.includes('function_call_result')) continue;
+      let o;
+      try { o = JSON.parse(ln); } catch { continue; }
+      const tr = (o.providerData && o.providerData.toolResult) || {};
+      const pres = tr.replPresentation;
+      if (pres && Array.isArray(pres.calls)) return { calls: pres.calls, omitted: pres.omitted || 0 };
+      const legacy = tr.replToolCalls; // 旧形态：arguments 是 JSON 串
+      if (legacy && Array.isArray(legacy.calls)) {
+        return {
+          calls: legacy.calls.map((c) => {
+            let rawInput = {};
+            try { rawInput = JSON.parse(c.arguments || '{}'); } catch { /* keep {} */ }
+            return { name: c.name, rawInput, status: c.status, durationMs: c.durationMs };
+          }),
+          omitted: legacy.omitted || 0,
+        };
+      }
+      return { calls: [], omitted: 0 };
+    }
+  } catch { /* 转录不可读：不展开 */ } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* ignore */ }
+  }
+  return null;
+}
 
 const _PTC_ASK_DENY =
   '本会话不能这样问用户：REPL 里的 AskUserQuestion / ExitPlanMode 没有审批宿主，' +
@@ -378,6 +438,7 @@ export class CodebuddySession extends BaseSession {
         } else if (b.type === 'tool_use') {
           this.last_activity = Date.now() / 1000;
           this._toolPhaseStart();
+          if (b.name === 'REPL' && b.id) (this._replIds || (this._replIds = new Set())).add(b.id);
           const sealed = this._flushTextLog();
           if (sealed) {
             await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
@@ -402,8 +463,37 @@ export class CodebuddySession extends BaseSession {
       await this._handleControlRequest(obj);
     } else if (t === 'result') {
       await this._handleResult(obj);
+    } else if (t === 'user') {
+      // tool_result 回传：只关心 REPL 单元，展开它内部的工具调用
+      if (obj.session_id) this._cliSid = String(obj.session_id);
+      for (const b of (obj.message && obj.message.content) || []) {
+        if (b.type === 'tool_result' && this._replIds && this._replIds.delete(b.tool_use_id)) {
+          await this._expandRepl(b.tool_use_id);
+        }
+      }
     }
-    // 'user' 帧（tool_result 回传）忽略
+  }
+
+  /** REPL 单元内部的工具调用 → 逐个子工具卡（sub:true，挂在 REPL 卡下面） */
+  async _expandRepl(callId) {
+    const file = this._transcript && fs.existsSync(this._transcript)
+      ? this._transcript
+      : (this._transcript = _findTranscript(this._cliSid || this.thread_id || this.cli_uuid));
+    if (!file) return;
+    let r = readReplCalls(file, callId);
+    if (!r) { // 落盘偶尔晚于 stream 帧：等一下再读一次
+      await new Promise((res) => setTimeout(res, 300));
+      r = readReplCalls(file, callId);
+    }
+    if (!r || !r.calls.length) return;
+    for (const c of r.calls.slice(0, REPL_CALLS_MAX)) {
+      const input = c.rawInput && typeof c.rawInput === 'object' ? c.rawInput : {};
+      const bad = c.status && !['completed', 'ok', 'success'].includes(c.status);
+      const brief = briefOf(input) + (bad ? '（' + c.status + '）' : '');
+      await this._sendSubActivity(String(c.name || '工具'), brief, _detailOf(input));
+    }
+    const more = r.omitted + Math.max(0, r.calls.length - REPL_CALLS_MAX);
+    if (more > 0) await this._sendSubActivity('…', `另有 ${more} 个调用未展开`, '');
   }
 
   /** 子代理活动卡：turnlog 落盘 + 广播（sub:true，WebUI 不封口现有运行卡） */

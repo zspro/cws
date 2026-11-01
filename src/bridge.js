@@ -307,6 +307,8 @@ export class Bridge {
     if (!data) return reply(400, { ok: false, error: 'empty content' });
     const s = this.sessions.get(sid);
     if (!s || s.closed) return reply(404, { ok: false, error: 'session_not_found' });
+    // 笔端不在线时直接报错，不要干等 60s 超时
+    if (!s.ws || s.ws.readyState !== s.ws.OPEN) return reply(409, { ok: false, error: 'pen_offline' });
     const id = crypto.randomBytes(8).toString('hex');
     const bytes = Buffer.from(data, 'base64').length;
     const done = new Promise((resolve) => {
@@ -369,8 +371,12 @@ export class Bridge {
   // ---------- capacity / gating ----------
   activeCount() {
     let n = 0;
+    const t = now();
     for (const s of this.sessions.values()) {
       if (s.holdsSlot ? s.holdsSlot() : (s.started_once && (!s.proc || procAlive(s.proc)))) n += 1;
+      // 刚从队列放出、进程首轮才拉起的会话（codebuddy/codex 等）：预留名额 120s，
+      // 否则 started_once 未置位时计数不涨，while 循环会一次放空整个队列
+      else if (!s.closed && !s.started_once && s._reservedUntil > t) n += 1;
     }
     return n;
   }
@@ -390,22 +396,28 @@ export class Bridge {
   }
 
   notifyCapacityChange() {
-    this._promoteQueue().catch(() => {});
+    // 串行化：多处同时触发时，前一轮 await 期间 started_once 还没置上，
+    // 并发的第二轮会按旧计数多放一个
+    this._promoteChain = (this._promoteChain || Promise.resolve())
+      .then(() => this._promoteQueue()).catch(() => {});
   }
 
   async _promoteQueue() {
     while (this.queue.length && this.activeCount() < this.maxActive) {
       const item = this.queue.shift();
-      const { sid, ws, echo } = item;
-      // ws 可能为 null（插件 kaxiExec 建的会话无客户端连接）——不能读 readyState；
-      // 这类会话直接建 lazy 形态启动，输出等客户端接管时 replay
-      if ((ws && ws.readyState !== ws.OPEN) || this.sessions.has(sid)) continue;
+      const { sid, echo } = item;
+      let ws = item.ws;
+      // 排队期间请求方断线：会话照建（lazy 形态，ws=null），ready/输出走广播，
+      // 客户端重连后 sessions.sync / takeover 接管——不能静默丢掉排队项
+      if (ws && (ws.readyState !== ws.OPEN || ws.closed)) ws = null;
+      if (this.sessions.has(sid)) continue;
       const s = makeSession(this, sid, ws, {
         permissionMode: item.permissionMode, channel: item.channel,
         model: item.model, backend: item.backend, agentMode: item.agentMode,
         project: item.project || '', cwd: item.cwd || null,
       });
       this.sessions.set(sid, s);
+      s._reservedUntil = now() + 120;
       s.pending_echo = echo;
       try {
         if (s.backend === 'codebuddy-tui') {
@@ -414,6 +426,7 @@ export class Bridge {
           await s.start();
         } else if (s.backend !== 'claude') {
           await this._announceReady(s, echo);
+          s.pending_echo = null; // 与 new_session 直建路径一致：否则 init 时再回一次带 new: echo 的 ready
         } else {
           await s.start();
         }
@@ -519,6 +532,7 @@ export class Bridge {
   /** /p/open 鉴权通过后建虚拟连接并注册进 conns；下行帧由 PollConn 排队。 */
   openPollConn(info = {}) {
     const conn = new PollConn(info);
+    conn.onClose = (c) => { this.closePollConn(c).catch(() => {}); };
     this.conns.add(conn);
     log('poll_open', { id: conn.id, client: conn._client.client });
     return conn;
@@ -556,7 +570,8 @@ export class Bridge {
         }
       }
     }
-    this.queue = this.queue.filter((q) => q.ws !== ws);
+    // 排队项不删：只解除连接绑定，排到号时照建（见 _promoteQueue）
+    for (const q of this.queue) if (q.ws === ws) q.ws = null;
     this.notifyCapacityChange();
   }
 
@@ -614,6 +629,7 @@ export class Bridge {
   async shutdown() {
     clearInterval(this.reaperTimer);
     clearInterval(this.sweepTimer);
+    clearInterval(this.pollSweepTimer);
     // 插件先收（停端点/落盘），会话进程随后统一收
     for (const fn of this.pluginShutdowns.reverse()) {
       try { await fn(); } catch (e) { log('plugin_shutdown_err', { err: String(e) }); }
@@ -628,10 +644,17 @@ export class Bridge {
     const action = frame.action;
     const params = frame.params || {};
     const echo = frame.echo;
+    // v0.3 首帧鉴权门禁：未鉴权连接只放行 auth/ping（ping 回 pong 无数据泄露），
+    // 其余一律 not_authed 拒答；广播也跳过未鉴权连接（sendWs）
+    if (ws._authed === false && action !== 'auth' && action !== 'ping') {
+      await this._wsSend(ws, { post_type: 'error', code: 'not_authed', echo });
+      return;
+    }
     // 会话定向动作先重绑连接：非广播回帧（permission_ack 等）走 session.ws
     // 单播，若还绑在早已断开的旧连接上，操作者会静默无响应——谁在操作这个
-    // 会话，回帧就跟谁（与 takeover 的 s.ws = ws 语义一致）
-    {
+    // 会话，回帧就跟谁（与 takeover 的 s.ws = ws 语义一致）。
+    // 必须在鉴权门之后，且不能绑到已关闭的连接（PollConn 关闭后 _upChain 的积压帧）
+    if (ws && ws.readyState === ws.OPEN && !ws.closed) {
       const sid0 = params.session_id;
       if (typeof sid0 === 'string') {
         const s0 = this.sessions.get(sid0);
@@ -640,12 +663,6 @@ export class Bridge {
           s0.detached = false;
         }
       }
-    }
-    // v0.3 首帧鉴权门禁：未鉴权连接只放行 auth/ping（ping 回 pong 无数据泄露），
-    // 其余一律 not_authed 拒答——广播帧本就不按连接发，未鉴权拿不到任何内容
-    if (ws._authed === false && action !== 'auth' && action !== 'ping') {
-      await this._wsSend(ws, { post_type: 'error', code: 'not_authed', echo });
-      return;
     }
     switch (action) {
       case 'auth': {
@@ -1108,7 +1125,12 @@ export class Bridge {
       return;
     }
     if (this.queue.some((q) => q.sid === sid)) {
-      await this._wsSend(ws, { post_type: 'error', session_id: sid, code: 'exists', message: 'session already queued', echo });
+      // 已在排队（客户端重试/换连接后重发）：改绑到当前连接并回排队位次，
+      // 排到号时 session_ready 才能送到还活着的连接
+      const idx = this.queue.findIndex((q) => q.sid === sid);
+      this.queue[idx].ws = ws;
+      this.queue[idx].echo = echo;
+      await this._wsSend(ws, { post_type: 'session_queued', session_id: sid, position: idx + 1, echo });
       return;
     }
     if (!channel && channelState.defaultChannel) channel = channelByName(channelState.defaultChannel);
@@ -1640,6 +1662,7 @@ export class Bridge {
     }
     if (this._kxEids.size > 4000) this._kxEids = new Set(this.kxlog.map((e) => e.eid));
     for (const c of this.conns) {
+      if (c._authed === false) continue;
       this._wsSend(c, { post_type: 'kx_log', entries: out }).catch(() => {});
     }
     return out;

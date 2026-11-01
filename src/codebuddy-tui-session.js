@@ -119,6 +119,7 @@ export class CodebuddyTuiSession extends BaseSession {
         term.signalCode = signal ?? null;
         log('tui_exit', { session_id: this.id, code: exitCode, signal });
         this._flushPending();
+        this.bridge.notifyCapacityChange(); // 与 claude/codebuddy 一致：进程退出即释放名额
         if (this.closed) return; // 切后端导致的退出：会话还活着，别报 exit
         this.sendWs({ post_type: 'term_exit', session_id: this.id, code: exitCode, signal: signal ?? null })
           .catch(() => {});

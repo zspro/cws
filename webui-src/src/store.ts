@@ -669,7 +669,7 @@ class Store {
       this.sealStreaming(s);
       this.sealTools(s);
     }
-    s.msgs.push({ kind: "tool", mid: f.mid, text: `${f.tool}：${f.brief || ""}`, run: !f.sub, detail: f.detail });
+    s.msgs.push({ kind: "tool", mid: f.mid, text: `${f.tool}：${f.brief || ""}`, run: !f.sub, detail: f.detail, sub: !!f.sub });
     this.touch();
   }
 
@@ -681,7 +681,7 @@ class Store {
       if (e.id) this.markSeen(f.session_id, e.id);
       if (e.role === "user") s.msgs.push({ kind: "user", mid: e.id, text: e.text });
       else if (e.role === "cc") s.msgs.push({ kind: "cc", mid: e.id, text: e.text });
-      else if (e.role === "tool") s.msgs.push({ kind: "tool", mid: e.id, text: e.text, run: false, detail: (e as Frame).detail });
+      else if (e.role === "tool") s.msgs.push({ kind: "tool", mid: e.id, text: e.text, run: false, detail: (e as Frame).detail, sub: !!(e as Frame).sub });
       else if (e.role === "sys") s.msgs.push({ kind: "sys", text: e.text });
     }
     if (f.last_mid) this.markSeen(f.session_id, f.last_mid);

@@ -33,7 +33,8 @@ export class Api {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), timeoutMs);
     try {
-      const res = await fetch(path, { ...init, signal: ac.signal });
+      // no-store：同一个 poll URL 的 410 会被浏览器缓存，之后再也到不了服务端
+      const res = await fetch(path, { ...init, cache: "no-store", signal: ac.signal });
       const text = await res.text();
       let json: any = null;
       try { json = JSON.parse(text); } catch { /* not json */ }

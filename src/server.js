@@ -130,7 +130,9 @@ function readBody(req, cap = 1024 * 1024) {
 }
 function jsonRes(res, code, obj) {
   const body = JSON.stringify(obj);
-  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
+  // no-store：poll 的 URL 每次都一样，410 又是浏览器默认可缓存的状态码——
+  // 缓存住一次 410，之后的 poll 全部命中缓存、根本到不了服务端（网页端一直重连）
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(body);
 }
 function pollConnOf(req, res) {
@@ -182,12 +184,17 @@ async function handlePollUp(req, res) {
   // 收下即回 200，路由在后台按连接串行跑：new_session/send 可能要等 CLI 拉起，
   // 等完再回会超过笔端 15s 上行超时被当成断线。回包走 poll 下行，与 WS 语义一致
   jsonRes(res, 200, { ok: true });
+  const routeOne = (f) => bridge.route(conn, f).catch((e) => {
+    log('route_err', { err: String(e), via: 'poll' });
+    conn.send(JSON.stringify({ post_type: 'error', code: 'internal', message: String(e) }));
+  });
   conn._upChain = (conn._upChain || Promise.resolve()).then(async () => {
     for (const f of frames) {
-      await bridge.route(conn, f).catch((e) => {
-        log('route_err', { err: String(e), via: 'poll' });
-        conn.send(JSON.stringify({ post_type: 'error', code: 'internal', message: String(e) }));
-      });
+      if (conn.closed) break; // 连接已关：积压帧不再路由（否则会把会话重绑到死连接）
+      // 卡西对话要等完整的 LLM + 工具循环（可达数十秒），不进串行链，
+      // 否则同连接后面的 ping/stop/ask_reply 全被堵住
+      if (f && f.action === 'kx.chat') { routeOne(f); continue; }
+      await routeOne(f);
     }
   });
 }
@@ -195,12 +202,12 @@ async function handlePollPoll(req, res) {
   const conn = pollConnOf(req, res);
   if (!conn) return;
   const url = new URL(req.url || '/', 'http://bridge.local');
-  const frames = await conn.readFrames(url.searchParams.get('wait'));
-  if (frames === null) {
+  const r = await conn.readFrames(url.searchParams.get('wait'), url.searchParams.get('ack'));
+  if (r === null) {
     jsonRes(res, 410, { code: 'gone', message: 'poll session expired, re-open' });
     return;
   }
-  jsonRes(res, 200, { frames });
+  jsonRes(res, 200, { frames: r.frames, first: r.first });
 }
 async function handlePollClose(req, res) {
   const conn = pollConnOf(req, res);
