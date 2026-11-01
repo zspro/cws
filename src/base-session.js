@@ -32,6 +32,22 @@ function sanitizeImages(images) {
   return out;
 }
 
+/** 附件清洗：最多 3 个、文件名去路径并限字符、纯 base64、单个解码后 ≤15MB
+ *  （与笔端选文件上限一致）。非法项静默丢弃。 */
+function sanitizeFiles(files) {
+  if (!Array.isArray(files)) return [];
+  const out = [];
+  for (const f of files.slice(0, 3)) {
+    if (!f || typeof f !== 'object') continue;
+    const name = path.basename(String(f.name || '')).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120);
+    const data = String(f.data || '').replace(/^data:[^,]*,/, '');
+    if (!name || name === '.' || name === '..') continue;
+    if (!/^[A-Za-z0-9+/=]+$/.test(data) || data.length > 20 * 1024 * 1024) continue;
+    out.push({ name, data });
+  }
+  return out;
+}
+
 export class BaseSession {
   constructor(bridge, sid, ws, opts = {}) {
     this.bridge = bridge;
@@ -122,6 +138,25 @@ export class BaseSession {
     }
     this._logTurnDisk(entry);
     return entry;
+  }
+
+  /** 附件落盘到会话数据目录 uploads/<时间戳>-<名>，返回 [{name, path}]。
+   *  不写进项目 cwd：避免污染用户仓库。 */
+  _saveUploads(files) {
+    const dir = path.join(this.data_dir, 'uploads');
+    const saved = [];
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = Date.now();
+      for (const f of files) {
+        const p = path.join(dir, `${stamp}-${f.name}`);
+        fs.writeFileSync(p, Buffer.from(f.data, 'base64'));
+        saved.push({ name: f.name, path: p });
+      }
+    } catch (e) {
+      log('upload_save_err', { session_id: this.id, err: String(e) });
+    }
+    return saved;
   }
 
   _logTurnDisk(entry) {
@@ -345,7 +380,7 @@ export class BaseSession {
       if (entry) {
         await this.sendWs({ post_type: 'sys', session_id: this.id, mid: entry.id, text: entry.text });
       }
-      await this.startTurn(lt.text, lt.echo, lt.images, { isRetry: true });
+      await this.startTurn(lt.text, lt.echo, lt.images, { isRetry: true, shown: lt.shown });
       return;
     }
     log('turn_timeout', { session_id: this.id, idle_s: this._idle_budget });
@@ -447,20 +482,35 @@ export class BaseSession {
     this.turn_active = true;
     this.aborted_sent = false;
     this.turn_echo = echo;
+    // 附件（任何后端）：落盘后把绝对路径拼进发给模型的文本，模型自己用 Read 去读。
+    // 重发时 text 已含路径，不再带 files，避免重复落盘
+    const files = this._saveUploads(sanitizeFiles(opts.files));
+    let modelText = text;
+    if (files.length) {
+      const note = '[用户上传的附件，已保存到服务器]\n' + files.map((f) => '- ' + f.path).join('\n');
+      modelText = text ? text + '\n\n' + note : note;
+    }
     // 静默超时自动重发的状态：本轮已见到的输出行数 / 已重发次数
-    this._last_turn = { text, images: imgs, echo };
+    this._last_turn = { text: modelText, images: imgs, echo, shown: opts.shown };
     if (!opts.isRetry) this._turn_retries = 0;
     this.last_activity = now();
     this.last_turn_at = this.last_activity;
     // base64 不进 turnlog（爆盘 + 回放拉历史会淹 WS）：落盘/回显用占位文本，
-    // 真图片数据只随本轮 user_msg 帧推给在线客户端
-    const shown = imgs.length
-      ? (text ? text + '\n[图片 ×' + imgs.length + ']' : '[图片 ×' + imgs.length + ']')
-      : text;
-    const uEntry = this._logTurn('user', shown);
+    // 真图片数据只随本轮 user_msg 帧推给在线客户端。占位格式与笔端本地预拼
+    // 逐字一致（笔端按文本对上本地气泡补 mid）
+    let shown = opts.shown;
+    if (shown === undefined) {
+      shown = text;
+      if (imgs.length) shown = shown ? shown + '\n[图片 ×' + imgs.length + ']' : '[图片 ×' + imgs.length + ']';
+      if (files.length) shown = shown ? shown + '\n[附件 ×' + files.length + ']' : '[附件 ×' + files.length + ']';
+      this._last_turn.shown = shown;
+    }
+    const fileMeta = files.length ? { files: files.map((f) => ({ name: f.name })) } : null;
+    const uEntry = this._logTurn('user', shown, fileMeta);
     if (uEntry) {
       const uFrame = { post_type: 'user_msg', session_id: this.id, mid: uEntry.id, text: shown };
       if (imgs.length) uFrame.images = imgs;
+      if (fileMeta) uFrame.files = fileMeta.files;
       await this.sendWs(uFrame);
     }
     this._idle_budget = TURN_TIMEOUT; // 上一轮可能死于工具期，预算先归位
@@ -470,7 +520,7 @@ export class BaseSession {
     // 此后到 _writeTurn 前到达的任何 stdout 行才证明「上游活了」
     this._turn_seen = false;
     try {
-      await this._writeTurn(text, echo, imgs);
+      await this._writeTurn(modelText, echo, imgs);
     } catch (e) {
       // 写轮失败（openclaw chat.send 被拒/superseded 等）：不留僵尸 turn_active
       this.turn_active = false;

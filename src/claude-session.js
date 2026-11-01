@@ -51,6 +51,15 @@ export class ClaudeSession extends BaseSession {
     return fs.existsSync(this._historyPath());
   }
 
+  /** 渠道 settings 写进会话数据目录（每次拉起覆盖），返回文件路径。 */
+  _writeChannelSettings(obj) {
+    const p = path.join(this.data_dir, 'channel-settings.json');
+    fs.mkdirSync(this.data_dir, { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(obj), { mode: 0o600 });
+    fs.chmodSync(p, 0o600); // 文件已存在时 writeFileSync 的 mode 不生效
+    return p;
+  }
+
   _buildArgs() {
     const useResume = (this.resume_flag || this.started_once) && this._hasHistory();
     const args = [
@@ -72,7 +81,8 @@ export class ClaudeSession extends BaseSession {
         },
       };
       if (this.model_name) envObj.model = this.model_name;
-      args.push('--settings', JSON.stringify(envObj));
+      // 密钥落 0600 文件、argv 只传路径：内联 JSON 会让 key 出现在 ps 输出里
+      args.push('--settings', this._writeChannelSettings(envObj));
     }
     if (this.model_name) args.push('--model', this.model_name);
     if (useResume) args.push('--resume', this.cli_uuid);

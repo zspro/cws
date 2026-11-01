@@ -947,7 +947,7 @@ export class Bridge {
     if (!s.turn_active) {
       await this._wsSend(ws, { post_type: 'send_ack', session_id: sid, echo });
     }
-    await s.startTurn(params.text || '', echo, params.images);
+    await s.startTurn(params.text || '', echo, params.images, { files: params.files });
   }
 
   /**
@@ -1318,8 +1318,8 @@ export class Bridge {
     return out;
   }
 
-  /** 渠道清单（完整密钥随行下发：token 门内的私有系统，手表端要复制；卡西的
-   * channels_list 按字段挑选不含它，密钥不会经卡西进聊天记录） */
+  /** 渠道清单：密钥只下发末 4 位（key_tail）。完整 key 只进不出——编辑时留空
+   *  即保留原值，客户端没有任何需要明文的路径。 */
   channelsSnapshot() {
     const chans = [];
     for (const ch of API_CHANNELS) {
@@ -1331,7 +1331,6 @@ export class Bridge {
         wire_api: ch.wire_api || 'responses', http_headers: ch.http_headers || {},
         model: ch.model || '', models: ch.models || [],
         key_tail: key.slice(-4),
-        api_key: key,
         default: ch.name === channelState.defaultChannel,
       });
     }
@@ -1429,7 +1428,10 @@ export class Bridge {
           entry.api_key_env = ch.api_key_env;
         }
         if (!params.wire_api && ch.wire_api) entry.wire_api = ch.wire_api;
+        // 笔端编辑表单不带 protocol：没传就沿用旧值，不能重置成 auto
+        if (!params.protocol && ch.protocol) entry.protocol = ch.protocol;
         if (!entry.http_headers && ch.http_headers) entry.http_headers = ch.http_headers;
+        if (Array.isArray(ch.models)) entry.models = ch.models;
         API_CHANNELS[i] = entry;
         found = true;
         break;

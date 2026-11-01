@@ -157,10 +157,17 @@ async function handlePollOpen(req, res) {
   });
   jsonRes(res, 200, { pid: conn.id, wait: 25, idle_close_s: 90 });
 }
+// 上行帧可带图片（≤3×6MB base64）和附件（≤3×15MB，base64 后 ×4/3）
+const POLL_UP_MAX_BYTES = 80 * 1024 * 1024;
+
 async function handlePollUp(req, res) {
   const conn = pollConnOf(req, res);
   if (!conn) return;
-  const raw = await readBody(req);
+  const raw = await readBody(req, POLL_UP_MAX_BYTES);
+  if (raw === null) {
+    jsonRes(res, 413, { code: 'too_large' });
+    return;
+  }
   let frames = null;
   try {
     const parsed = JSON.parse(raw);
@@ -172,12 +179,17 @@ async function handlePollUp(req, res) {
     jsonRes(res, 400, { code: 'bad_json' });
     return;
   }
-  for (const f of frames) {
-    await bridge.route(conn, f).catch((e) => {
-      log('route_err', { err: String(e), via: 'poll' });
-    });
-  }
+  // 收下即回 200，路由在后台按连接串行跑：new_session/send 可能要等 CLI 拉起，
+  // 等完再回会超过笔端 15s 上行超时被当成断线。回包走 poll 下行，与 WS 语义一致
   jsonRes(res, 200, { ok: true });
+  conn._upChain = (conn._upChain || Promise.resolve()).then(async () => {
+    for (const f of frames) {
+      await bridge.route(conn, f).catch((e) => {
+        log('route_err', { err: String(e), via: 'poll' });
+        conn.send(JSON.stringify({ post_type: 'error', code: 'internal', message: String(e) }));
+      });
+    }
+  });
 }
 async function handlePollPoll(req, res) {
   const conn = pollConnOf(req, res);
