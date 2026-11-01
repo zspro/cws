@@ -729,6 +729,7 @@ export class CodebuddySession extends BaseSession {
       permission_mode: this.permission_mode,
       agent_mode: this.agent_mode || null,
       backend: this.backend,
+      project: this.project_id || '',
       echo: this.pending_echo,
     });
     this.pending_echo = null;

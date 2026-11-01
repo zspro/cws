@@ -460,7 +460,7 @@ export class Bridge {
       model: s.model_name, channel: (s.channel || {}).name,
       turn_active: s.turn_active, permission_mode: s.permission_mode,
       agent_mode: s.agent_mode || null,
-      backend: s.backend, gateway: s.gatewayName || null, echo,
+      backend: s.backend, gateway: s.gatewayName || null, project: s.project_id || '', echo,
     });
   }
 
@@ -1141,6 +1141,7 @@ export class Bridge {
         agent_mode: existing.agent_mode || null,
         backend: existing.backend,
         gateway: existing.gatewayName || null,
+        project: existing.project_id || '',
         echo,
       });
       log('takeover', {
@@ -1191,7 +1192,7 @@ export class Bridge {
         model: s.model_name, channel: (s.channel || {}).name,
         turn_active: s.turn_active, permission_mode: s.permission_mode,
         agent_mode: s.agent_mode || null,
-        backend: s.backend, gateway: s.gatewayName || null, echo,
+        backend: s.backend, gateway: s.gatewayName || null, project: s.project_id || '', echo,
       });
       const warm = replay.length && this.activeCount() < this.maxActive && s.backend === 'claude';
       if (warm) s._warmStart().catch(() => {});
@@ -1284,7 +1285,7 @@ export class Bridge {
           post_type: 'session_ready', session_id: sid,
           model: s.model_name, channel: (s.channel || {}).name,
           turn_active: s.turn_active, permission_mode: s.permission_mode,
-          backend: s.backend, gateway: s.gatewayName || null, echo,
+          backend: s.backend, gateway: s.gatewayName || null, project: s.project_id || '', echo,
         });
         log('sync_attach', { session_id: sid, turn_active: s.turn_active });
       }

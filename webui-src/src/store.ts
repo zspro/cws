@@ -226,6 +226,7 @@ class Store {
 
   /** 新建会话弹窗预选的项目 id（点某项目的「新建任务」时设置） */
   newSessionProject = "";
+  private pendingProject = new Map<string, string>();
   setNewProject(id: string) { this.newSessionProject = id || ""; this.touch(); }
 
   // ---------- 项目（工作目录） ----------
@@ -250,7 +251,10 @@ class Store {
     if (!this.api) return;
     const echo = this.api.newEcho();
     const sid = fields.session_id?.trim() || undefined;
-    if (sid) this.sess(sid); // 预建占位
+    if (sid) this.sess(sid).info.project = fields.project || ""; // 预建占位 + 归属立刻写上
+    // 服务端分配 sid 的情况：按 echo 记住归属，session_ready 回来时补上
+    // （不补的话侧栏先把新会话挂进「未分类」，要等 sessions.list 刷新才归位）
+    this.pendingProject.set(echo, fields.project || "");
     this.send("new_session", {
       session_id: sid, backend: fields.backend,
       channel: fields.channel || undefined, model: fields.model?.trim() || undefined,
@@ -376,6 +380,9 @@ class Store {
         const s = this.sess(f.session_id);
         s.info.queued = true;
         s.info.queue_position = f.position;
+        if (typeof f.echo === "string" && this.pendingProject.has(f.echo)) {
+          s.info.project = this.pendingProject.get(f.echo) || ""; // 排队中也挂对项目，ready 时再清
+        }
         this.touch();
         break;
       }
@@ -623,6 +630,12 @@ class Store {
       queued: false,
       closed: false,
     });
+    // 归属：服务端帧带 project 为准（新服务端），老服务端退回本端建会话时记下的
+    if (typeof f.project === "string") s.info.project = f.project;
+    if (typeof f.echo === "string" && this.pendingProject.has(f.echo)) {
+      if (typeof f.project !== "string") s.info.project = this.pendingProject.get(f.echo) || "";
+      this.pendingProject.delete(f.echo);
+    }
     if (!s.info.title) s.info.title = "会话 " + f.session_id.slice(0, 12);
     // 创建即打开：new: 前缀 echo 是客户端约定（bridge 原样回传）
     if (typeof f.echo === "string" && f.echo.startsWith("new:")) {

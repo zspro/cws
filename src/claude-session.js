@@ -335,6 +335,7 @@ export class ClaudeSession extends BaseSession {
       channel: (this.channel || {}).name,
       permission_mode: this.permission_mode,
       backend: this.backend,
+      project: this.project_id || '',
       echo: this.pending_echo,
     });
     this.pending_echo = null;
