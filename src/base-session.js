@@ -150,8 +150,10 @@ export class BaseSession {
     try {
       fs.mkdirSync(dir, { recursive: true });
       const stamp = Date.now();
-      for (const f of files) {
-        const p = path.join(dir, `${stamp}-${f.name}`);
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        // 同一次发送里的同名文件（a/x.txt、b/x.txt）带序号，否则后一个覆盖前一个
+        const p = path.join(dir, `${stamp}-${i ? i + '-' : ''}${f.name}`);
         fs.writeFileSync(p, Buffer.from(f.data, 'base64'));
         saved.push({ name: f.name, path: p });
       }

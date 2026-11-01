@@ -301,14 +301,22 @@ export class Bridge {
     try { body = JSON.parse(raw || '{}'); } catch { return reply(400, { ok: false, error: 'bad json' }); }
     const sid = String(body.session_id || '');
     const pathIn = String(body.path || '').trim();
-    if (!pathIn.startsWith('/userdisk/')) return reply(400, { ok: false, error: 'path must be under /userdisk/' });
+    // 归一化后再判前缀：/userdisk/../etc/x 字面上以 /userdisk/ 开头（笔端同样校验）
+    if (!pathIn.startsWith('/userdisk/') || path.posix.normalize(pathIn) !== pathIn
+      || pathIn.split('/').includes('..') || pathIn.endsWith('/')) {
+      return reply(400, { ok: false, error: 'path must be a normalized file path under /userdisk/' });
+    }
     let data = String(body.data || '');
     if (body.encoding !== 'base64') data = Buffer.from(String(body.content || ''), 'utf8').toString('base64');
     if (!data) return reply(400, { ok: false, error: 'empty content' });
     const s = this.sessions.get(sid);
     if (!s || s.closed) return reply(404, { ok: false, error: 'session_not_found' });
     // 笔端不在线时直接报错，不要干等 60s 超时
-    if (!s.ws || s.ws.readyState !== s.ws.OPEN) return reply(409, { ok: false, error: 'pen_offline' });
+    // 长轮询连接 readyState 恒 OPEN，在线与否看最近一次 poll（挂起中的 poll 最长 55s）
+    if (!s.ws || s.ws.readyState !== s.ws.OPEN || s.ws._closed
+      || (s.ws.isPoll && typeof s.ws.idleFor === 'function' && s.ws.idleFor(70_000) && !s.ws._reading)) {
+      return reply(409, { ok: false, error: 'pen_offline' });
+    }
     const id = crypto.randomBytes(8).toString('hex');
     const bytes = Buffer.from(data, 'base64').length;
     const done = new Promise((resolve) => {
@@ -403,6 +411,8 @@ export class Bridge {
   }
 
   async _promoteQueue() {
+    // 排着队的人优先于闲置会话：有闲置就腾给队头
+    while (this.queue.length && this.activeCount() >= this.maxActive && await this._evictIdleOne(this.queue[0].sid)) { /* 继续腾 */ }
     while (this.queue.length && this.activeCount() < this.maxActive) {
       const item = this.queue.shift();
       const { sid, echo } = item;
@@ -573,6 +583,23 @@ export class Bridge {
     // 排队项不删：只解除连接绑定，排到号时照建（见 _promoteQueue）
     for (const q of this.queue) if (q.ws === ws) q.ws = null;
     this.notifyCapacityChange();
+  }
+
+  /** 释放一个最久未活动的闲置会话（占名额、没在跑轮、没挂问卡），返回是否释放了。
+   *  语义同 idleReap 的单个回收，只是不等 idle_timeout。 */
+  async _evictIdleOne(exceptSid) {
+    let victim = null;
+    for (const [sid, s] of this.sessions.entries()) {
+      if (sid === exceptSid || s.closed || s.turn_active || s.pending_asks.size) continue;
+      const holds = s.holdsSlot ? s.holdsSlot() : (s.started_once && (!s.proc || procAlive(s.proc)));
+      if (!holds) continue;
+      if (!victim || s.last_activity < victim.last_activity) victim = s;
+    }
+    if (!victim) return false;
+    log('idle_evict', { session_id: victim.id, for: exceptSid, idle_s: Math.round(now() - victim.last_activity) });
+    await victim.close('idle_timeout');
+    this.sessions.delete(victim.id);
+    return true;
   }
 
   async idleReap() {
@@ -933,6 +960,8 @@ export class Bridge {
     if (!s || s.closed) {
       // lazy revive: turnlog on disk means the session exists server-side
       if (isValidSid(sid) && fs.existsSync(path.join(WORKSPACES, sid, 'turnlog.jsonl'))) {
+        // 复活也占名额：满员先腾一个闲置的（腾不出就超额跑，不让用户的消息排队）
+        while (this.activeCount() >= this.maxActive && await this._evictIdleOne(sid)) { /* 继续腾 */ }
         s = makeSession(this, sid, null, {
           resume: true, permissionMode: params.permission_mode,
         });
@@ -1169,6 +1198,9 @@ export class Bridge {
       log('resume_lazy', { session_id: sid, replay: replay.length, warm });
       return;
     }
+    // 满员先腾名额：闲置会话（没在跑轮、没挂问卡）按最久未活动依次释放进程，
+    // 下次发消息走 lazy revive 从盘上 resume，对话不丢。只有全员都在干活才排队
+    while (this.activeCount() >= this.maxActive && await this._evictIdleOne(sid)) { /* 继续腾 */ }
     if (this.activeCount() >= this.maxActive) {
       if (this.queue.length >= this.maxQueue) {
         await this._wsSend(ws, {
