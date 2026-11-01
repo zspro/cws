@@ -605,3 +605,27 @@ CLI 会把 control_response 的 updatedInput **当成模型自己写的入参**�
 
 - 笔端真机实弹（安装 .amr 后实测连接/对话/断线重连）——待用户装包验证；
 - 90s 空闲回收与爆仓断开两条路径未单测（逻辑直白，靠 sweep 日志观察）。
+
+## 网页端同弃 WS：webui 改 HTTP 长轮询（2026-11-01）
+
+### 改动
+
+- `webui-src/src/api.ts` 重写：Api 类接口（connect/send/ready/destroy/
+  everConnected/echo 约定）与旧 WebSocket 版完全同形，`store.ts` 零改动。
+  流程：/p/open(token)→pid → /p/poll?wait=25 循环（fetch 35s 超时>挂起 25s）
+  → /p/up 串行链保帧序；410/网络错→整会话重开；destroy 走 /p/close
+  （keepalive）+ abort 在飞 poll。
+- `restart_bridge.sh` pgrep 模式修正：原 `node src/server[.]js` 匹配不到
+  systemd 的 `/usr/bin/node /my/run/cws/src/server.js`（导致「no running
+  bridge」假象 + 新进程 EADDRINUSE 静默死亡 + ss 误报重启成功）；改为匹配
+  全路径。生产以 `systemctl restart cws` 为准。
+
+### 验收（隔离服 :18721 + mock 网关，Windows Node 24）
+
+- tsc + vite 构建通过（`npm run build:webui`）。
+- playwright 真浏览器全链路：登录 token→顶栏「已连接」→新建 openclaw 会话→
+  发「1+1」→回复「2」→状态持续「已连接」；页面 resource 计数
+  poll_requests=27、/ws=0（零 WebSocket）。
+- 生产部署：f36d0c7（服务端）+ webui 构建产物 push origin；
+  `systemctl restart cws` 后 8642 直连与 8443 TLS 入口 /p/open 均回 401
+  （鉴权层可达）；webui 静态文件按请求读盘，更新即生效无需再重启。

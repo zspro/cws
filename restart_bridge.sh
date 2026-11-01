@@ -8,7 +8,10 @@ PORT=8642
 DIR=/my/run/cws
 NODE="$(command -v node)"
 LOG="$DIR/bridge.log"
-PAT='node src/server[.]js'   # [.] prevents self-match of this script's own cmdline
+# 匹配全路径（systemd ExecStart=/usr/bin/node /my/run/cws/src/server.js），
+# 旧写法 node src/server[.]js 匹配不到 → 误判 no running bridge + 新进程
+# EADDRINUSE 静默死亡 + ss 误报重启成功。生产以 systemctl restart cws 为准
+PAT='cws/src/server[.]js'
 
 log() { echo "$(date '+%F %T') [restart_bridge] $*"; }
 
