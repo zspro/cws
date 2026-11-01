@@ -25,7 +25,9 @@ export function Shell({ title, onClose, children, wide }: {
 export function NewSessionPanel() {
   const st = useStore();
   const [sid, setSid] = useState("");
-  const [backend, setBackend] = useState<Backend>("claude");
+  // 默认 codebuddy：这台服务器上 claude/codex 的二进制并不存在（spawn ENOENT），
+  // 默认 claude 只会建出一个永远起不来的会话
+  const [backend, setBackend] = useState<Backend>("codebuddy");
   const [channel, setChannel] = useState("");
   const [model, setModel] = useState("");
   const [perm, setPerm] = useState("default");
