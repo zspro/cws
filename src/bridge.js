@@ -2208,43 +2208,71 @@ export class Bridge {
   }
 
   async setModel(ws, params, echo) {
-    const s = this.sessions.get(params.session_id);
-    if (!s || s.closed) {
-      await this._wsSend(ws, {
-        post_type: 'error', code: 'unknown_session', session_id: params.session_id, echo,
-      });
+    const sid = params.session_id;
+    const s = this.sessions.get(sid);
+    const lazy = !s || s.closed;
+    // lazy 会话（idle 回收/桥重启后不在内存）：同 set_permission，只落盘 sess.json，
+    // 复活时 base-session 读 meta.channel/model 生效——不为切个模型拉起整个会话
+    const meta = lazy && isValidSid(sid) && fs.existsSync(path.join(WORKSPACES, sid, 'turnlog.jsonl'))
+      ? loadSessMetaRaw(sid) : null;
+    if (lazy && !meta) {
+      await this._wsSend(ws, { post_type: 'error', code: 'unknown_session', session_id: sid, echo });
       return;
     }
+    const backend = lazy ? (meta.backend || 'claude') : s.backend;
+    if (backend === 'openclaw') {
+      if (!lazy) await s.setChannel(null, null, echo);
+      else await this._wsSend(ws, { post_type: 'model_ack', session_id: sid, channel: null, model: null, applied: false, echo });
+      return;
+    }
+    const apply = async (ch, model, clear) => {
+      if (!lazy) { await s.setChannel(ch, model, echo, clear); return; }
+      // 与 setChannel 同语义：只给模型 = 在现渠道上覆盖；clear = 清渠道走 CLI 自带模型
+      const chName = ch ? ch.name : (clear ? '' : (meta.channel || ''));
+      const m = model || (ch ? ch.model : '') || (clear ? '' : meta.model) || '';
+      meta.channel = chName;
+      meta.model = m;
+      try {
+        fs.writeFileSync(path.join(WORKSPACES, sid, 'sess.json'), JSON.stringify(meta));
+      } catch {
+        await this._wsSend(ws, { post_type: 'error', code: 'model_save_failed', session_id: sid, echo });
+        return;
+      }
+      await this._wsSend(ws, { post_type: 'model_ack', session_id: sid, channel: chName, model: m, applied: false, echo });
+    };
     let chan = params.channel ? channelByName(params.channel) : null;
     if (params.channel && !chan) {
       await this._wsSend(ws, { post_type: 'error', code: 'bad_channel', channel: params.channel, echo });
       return;
     }
-    if (chan && !this._channelProtocolOk(s.backend, chan)) {
+    if (chan && !this._channelProtocolOk(backend, chan)) {
       await this._wsSend(ws, {
         post_type: 'error', code: 'bad_backend_channel', channel: chan.name,
-        message: s.backend + ' 后端不能使用 ' + (chan.protocol || 'auto') + ' 协议渠道 ' + chan.name,
+        message: backend + ' 后端不能使用 ' + (chan.protocol || 'auto') + ' 协议渠道 ' + chan.name,
         echo,
       });
       return;
     }
     if ('channel' in params && !params.channel) {
-      // 只给模型（两支客户端现在都这样）：按 model 反查渠道，协议不兼容的跳过；
+      // exact：客户端点的是「官方服务」行，明确不要渠道（不反查，免得官方
+      // 模型名恰好和某个渠道的模型同名被劫走）
+      if (params.exact) { await apply(null, params.model || null, true); return; }
+      // 只给模型（老客户端）：按 model 反查渠道，协议不兼容的跳过；
       // 查不到就清空渠道走 CLI 自带模型。
       const want = String(params.model || '').trim().toLowerCase();
       if (want) {
-        const hit = API_CHANNELS.find((ch) => ch && this._channelProtocolOk(s.backend, ch)
+        const hit = API_CHANNELS.find((ch) => ch && this._channelProtocolOk(backend, ch)
           && (String(ch.model || '').toLowerCase() === want
             || (Array.isArray(ch.models) && ch.models.some((x) => String(x).toLowerCase() === want))));
         if (hit) {
-          await s.setChannel(hit, params.model, echo);
+          await apply(hit, params.model, false);
           return;
         }
       }
-      await s.setChannel(null, params.model, echo, true);
+      await apply(null, params.model || null, true);
       return;
     }
-    await s.setChannel(chan, params.model, echo);
+    await apply(chan, params.model || null, false);
   }
 
   /** agent 模式切换：仅 codebuddy 后端。内存会话走 setAgent（重启生效），

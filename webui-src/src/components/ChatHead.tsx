@@ -49,38 +49,48 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
                 </button>
               )}
               {(() => {
-                // 只列模型：渠道由服务端按 model 反查（协议不兼容的渠道服务端已经滤掉）
-                const seen = new Set<string>();
-                const opts: { model: string; label?: string }[] = [];
-                for (const m of (st.models || [])) {
-                  if (!m.model || seen.has(m.model)) continue;
-                  seen.add(m.model);
-                  opts.push({ model: m.model, label: m.label !== m.channel ? m.label : undefined });
-                }
-                // 老服务端没有 models.list：退回渠道里配的模型，别让下拉空掉
+                // 按渠道分组：官方服务 + 当前会话后端能用的渠道（krio / krio-oai 这类
+                // 同名模型只出现协议对得上的那个）。选项值 = 渠道\u0001模型，渠道明确下发
+                if (info.backend === "openclaw") return null;
+                const groups: { channel: string; label: string; models: string[] }[] = [];
+                const push = (g: { channel: string; label: string; models: string[] }, m?: string | null) => {
+                  if (m && !g.models.includes(m)) g.models.push(m);
+                };
+                const official = { channel: "", label: "官方服务", models: [] as string[] };
+                for (const m of (((st.backends?.models as Record<string, string[]> | undefined)?.[info.backend]) || [])) push(official, m);
+                groups.push(official);
                 for (const c of store.channelsForBackend(info.backend)) {
-                  const m = c.model || "";
-                  if (!m || seen.has(m)) continue;
-                  seen.add(m);
-                  opts.push({ model: m, label: c.label });
+                  const g = { channel: c.name, label: c.label || c.name, models: [] as string[] };
+                  push(g, c.model);
+                  for (const m of c.models || []) push(g, m);
+                  for (const m of st.models || []) if (m.channel === c.name) push(g, m.model);
+                  groups.push(g);
                 }
-                for (const m of (((st.backends?.models as Record<string, string[]> | undefined)?.[info.backend]) || [])) {
-                  if (!m || seen.has(m)) continue;
-                  seen.add(m);
-                  opts.push({ model: m });
+                const cur = (info.channel || "") + "\u0001" + (info.model || "");
+                const known = groups.some((g) => g.channel === (info.channel || "") && g.models.includes(info.model || ""));
+                if (info.model && !known) {
+                  const g = groups.find((x) => x.channel === (info.channel || ""));
+                  if (g) g.models.unshift(info.model);
                 }
-                if (info.model && !seen.has(info.model)) opts.push({ model: info.model });
-                if (!opts.length) return null;
                 return (
                   <select
                     className="model-chip"
                     title="当前会话的模型（只影响这个会话）"
-                    value={info.model || ""}
-                    onChange={(e) => store.applyModel(info.session_id, "", e.target.value)}
+                    value={info.model ? cur : ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (!v) { store.applyModel(info.session_id, "", "", true); return; }
+                      const [ch, m] = v.split("\u0001");
+                      store.applyModel(info.session_id, ch, m, !ch);
+                    }}
                   >
                     <option value="">默认模型</option>
-                    {opts.map((o) => (
-                      <option key={o.model} value={o.model}>{o.label ? o.model + " · " + o.label : o.model}</option>
+                    {groups.filter((g) => g.models.length).map((g) => (
+                      <optgroup key={"g-" + g.channel} label={g.label}>
+                        {g.models.map((m) => (
+                          <option key={g.channel + "/" + m} value={g.channel + "\u0001" + m}>{m}</option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 );

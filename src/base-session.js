@@ -89,7 +89,9 @@ export class BaseSession {
     let channel = opts.channel ?? null;
     if (!channel && meta.channel) {
       const ch = channelByName(meta.channel);
-      if (ch) channel = ch;
+      // 复活：sess.json 的 model 是用户在该渠道上选过的模型，优先于渠道默认值
+      // （原先渠道默认值在前，复活后会话悄悄换回渠道默认模型）
+      if (ch) channel = meta.model ? { ...ch, model: meta.model } : ch;
     }
     this.channel = channel;
     this.model_name = opts.model || (channel && channel.model) || meta.model || null;

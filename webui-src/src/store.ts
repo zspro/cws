@@ -301,8 +301,9 @@ class Store {
     this.send("set_permission", { session_id: sid, mode });
   }
 
-  applyModel(sid: string, channel: string, model: string) {
-    this.send("set_model", { session_id: sid, channel, model: model.trim() });
+  /** exact：channel 为空时明确走官方服务，服务端不按模型名反查渠道 */
+  applyModel(sid: string, channel: string, model: string, exact = false) {
+    this.send("set_model", { session_id: sid, channel, model: model.trim(), ...(exact ? { exact: true } : {}) });
   }
 
   applyAgent(sid: string, agent: string) {
