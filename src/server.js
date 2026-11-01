@@ -110,6 +110,93 @@ function serveSharedFile(req, res, rawPath) {
   }
 }
 
+// ---------- HTTP 长轮询传输（笔端 /p/*，弃 WS 的替代通道；WS 全保留） ----------
+// pid 是 128bit 随机 bearer 凭据，走 x-cws-poll 头（不进 URL/日志）；
+// /p/open 用 token 换 pid，之后 poll/up/close 只认 pid。
+function readBody(req, cap = 1024 * 1024) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > cap) { finish(null); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => finish(null));
+  });
+}
+function jsonRes(res, code, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(body);
+}
+function pollConnOf(req, res) {
+  const conn = bridge.getPollConn(req.headers['x-cws-poll']);
+  if (!conn) {
+    jsonRes(res, 410, { code: 'gone', message: 'poll session expired, re-open' });
+    return null;
+  }
+  return conn;
+}
+async function handlePollOpen(req, res) {
+  const raw = await readBody(req);
+  let body = null;
+  try { body = JSON.parse(raw || '{}'); } catch { /* fallthrough */ }
+  const token = String((body && body.token) || '');
+  if (!token || !bridge.authCore(token)) {
+    log('poll_auth_fail', {});
+    jsonRes(res, 401, { code: 'auth_rejected' });
+    return;
+  }
+  const conn = bridge.openPollConn({
+    client: String((body && body.client) || ''),
+    version: String((body && body.version) || ''),
+  });
+  jsonRes(res, 200, { pid: conn.id, wait: 25, idle_close_s: 90 });
+}
+async function handlePollUp(req, res) {
+  const conn = pollConnOf(req, res);
+  if (!conn) return;
+  const raw = await readBody(req);
+  let frames = null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) frames = parsed;
+    else if (parsed && Array.isArray(parsed.frames)) frames = parsed.frames;
+    else if (parsed && typeof parsed === 'object') frames = [parsed];
+  } catch { /* fallthrough */ }
+  if (!frames || !frames.length) {
+    jsonRes(res, 400, { code: 'bad_json' });
+    return;
+  }
+  for (const f of frames) {
+    await bridge.route(conn, f).catch((e) => {
+      log('route_err', { err: String(e), via: 'poll' });
+    });
+  }
+  jsonRes(res, 200, { ok: true });
+}
+async function handlePollPoll(req, res) {
+  const conn = pollConnOf(req, res);
+  if (!conn) return;
+  const url = new URL(req.url || '/', 'http://bridge.local');
+  const frames = await conn.readFrames(url.searchParams.get('wait'));
+  if (frames === null) {
+    jsonRes(res, 410, { code: 'gone', message: 'poll session expired, re-open' });
+    return;
+  }
+  jsonRes(res, 200, { frames });
+}
+async function handlePollClose(req, res) {
+  const conn = pollConnOf(req, res);
+  if (!conn) return;
+  await bridge.closePollConn(conn);
+  jsonRes(res, 200, { ok: true });
+}
+
 const server = http.createServer((req, res) => {
   // access log: never log query strings (tokens live there)
   let rawPath = (req.url || '/').split('?')[0];
@@ -129,6 +216,11 @@ const server = http.createServer((req, res) => {
     serveSharedFile(req, res, rawPath);
     return;
   }
+  // 长轮询传输（笔端）：open 换 pid → poll 拉下行 → up 推上行
+  if (rawPath === '/p/open' && req.method === 'POST') { handlePollOpen(req, res).catch(() => jsonRes(res, 500, { code: 'internal' })); return; }
+  if (rawPath === '/p/poll' && req.method === 'GET') { handlePollPoll(req, res).catch(() => jsonRes(res, 500, { code: 'internal' })); return; }
+  if (rawPath === '/p/up' && req.method === 'POST') { handlePollUp(req, res).catch(() => jsonRes(res, 500, { code: 'internal' })); return; }
+  if (rawPath === '/p/close' && req.method === 'POST') { handlePollClose(req, res).catch(() => jsonRes(res, 500, { code: 'internal' })); return; }
   // MCP 问卡的桥端入口（cws 自家 MCP 服务 → 这里 → ask 帧 → 前端）
   if (rawPath === '/mcp-ask') {
     bridge.handleMcpAsk(req, res);

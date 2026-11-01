@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { BaseSession } from './base-session.js';
+import { PollConn } from './poll-conn.js';
 import { listProjects, projectById, createProject, updateProject, deleteProject, projectsRoot } from './projects.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
@@ -121,6 +122,17 @@ export class Bridge {
     this.maxActive = MAX_ACTIVE;
     this.maxQueue = QUEUE_MAX;
     this.reaperTimer = setInterval(() => { this.idleReap().catch(() => {}); }, 60_000);
+    // 长轮询连接回收：笔端 90s 没来 poll = 消失，走 closePollConn 的完整
+    // detach（会话 detached、排队项清退），与 WS close 同语义
+    this.pollSweepTimer = setInterval(() => {
+      for (const c of [...this.conns]) {
+        if (c.isPoll && (c.closed || c.idleFor(90_000))) {
+          log('poll_idle_close', { id: c.id });
+          this.closePollConn(c).catch(() => {});
+        }
+      }
+    }, 30_000);
+    this.pollSweepTimer.unref && this.pollSweepTimer.unref();
     // 磁盘清扫：启动后 15s 先跑一次，之后每小时一次
     this.sweepTimer = setInterval(() => { try { this.sweepWorkspaces(); } catch {} }, 3600_000);
     setTimeout(() => { try { this.sweepWorkspaces(); } catch {} }, 15_000);
@@ -501,6 +513,37 @@ export class Bridge {
       return true;
     }
     return false;
+  }
+
+  // ---------- HTTP 长轮询传输（笔端弃 WS 后的接入形态，v0.2/v0.3 WS 全保留） ----------
+  /** /p/open 鉴权通过后建虚拟连接并注册进 conns；下行帧由 PollConn 排队。 */
+  openPollConn(info = {}) {
+    const conn = new PollConn(info);
+    this.conns.add(conn);
+    log('poll_open', { id: conn.id, client: conn._client.client });
+    return conn;
+  }
+
+  getPollConn(pid) {
+    const id = String(pid || '');
+    if (!/^[0-9a-f]{32}$/.test(id)) return null;
+    for (const c of this.conns) {
+      if (c.isPoll && c.id === id && !c.closed) return c;
+    }
+    return null;
+  }
+
+  /** PollConn 关闭收口（笔端 /p/close、auth 拒绝、空闲回收）：与 WS close
+   *  同一套 detach 语义（会话 detached、排队项清退）。已 closed 但还挂在
+   *  conns 里的（如 auth 拒绝路径只调了 conn.close）也在这里补 detach。 */
+  async closePollConn(conn) {
+    if (!conn) return;
+    const wasOpen = !conn.closed;
+    conn.close();
+    if (!this.conns.has(conn)) return;
+    this.conns.delete(conn);
+    log('poll_close', { id: conn.id, was_open: wasOpen });
+    await this.onWsClosed(conn).catch(() => {});
   }
 
   async onWsClosed(ws) {

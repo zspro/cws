@@ -16,6 +16,25 @@ QQ 机器人、WebUI、任意客户端都能在线创建/接管会话、流式�
 - 验收：`node scripts/test-v03-auth.mjs`（12 项：新旧双路径/未鉴权门禁/一次性
   token 消费/静默超时断开）。
 
+## 传输层：HTTP 长轮询（v0.4，笔端专用）+ WS 双轨
+
+笔端词典笔的 WebSocket 组件存在「假连」（send 不报错但对端收不到、半开连接
+僵尸），2026-11 起笔端传输层改走 **HTTP 长轮询**，与 WS 并存、互不影响：
+
+- `POST /p/open` `{token}` → `{pid}`（token 换 128bit bearer 凭据；401=拒绝）
+- `GET /p/poll?wait=25`（头 `x-cws-poll: pid`）→ `{frames:[原始JSON字符串…]}`；
+  无帧挂起到 wait 秒（上限 55s），空转返回 `[]`；pid 失效/服务重启 410
+- `POST /p/up`（头 `x-cws-poll`，体=单帧 JSON / 帧数组）→ `{ok:true}`，
+  帧路由与 WS 完全同一套 `bridge.route`
+- `POST /p/close` 显式拆线；90s 无 poll 自动回收（等同 WS 断开的会话 detach）
+- pid 走请求头不进 URL/日志；新 poll 接管旧 waiter（客户端重试不吞帧）
+
+帧协议（auth/hello/ping/会话动作）与 WS 完全一致：笔端 `rcpoll.js` 仿真原生
+WebSocket 事件接口（open/message/close/error + send），rccws.js 仅换构造点，
+老服务端无 /p/open（404）自动回退 WS。WebUI/QQ/旧笔端继续走 /ws 不变。
+验收：`node scripts/test-poll-transport.mjs`（15 项）+
+`node scripts/test-rcpoll-client.mjs`（9 项，仿真笔端 Fetch 模块）。
+
 ## 五后端架构（一站式遥控台）
 
 | 后端 | 对象 | 方式 |

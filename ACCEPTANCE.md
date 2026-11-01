@@ -562,3 +562,46 @@ CLI 会把 control_response 的 updatedInput **当成模型自己写的入参**�
 - REPL 内可调用 `mcp.cwsask.ask_user`，返回真正的 tool_result（无预填痕迹）。
 - 端到端：`10.2s ASK(tool=AskUserQuestion, kind=question)` → 答「方案B」→ `12.5s FINAL 你选择了「方案B」`。
 - WebUI 侧同步修了问卡选项缺 `value` 导致答复恒为 `"on"` 的 bug（a8c2834）。
+## 传输层弃 WS：HTTP 长轮询（2026-11-01）
+
+### 动机
+
+笔端词典笔 WS 组件假连（rcSend 成功对端收不到、半开僵尸要靠 25s ping/70s
+看门狗兜），WebSocket 长连接在笔的网络环境里本质不稳。改 HTTP 长轮询：
+每一笔交互都是独立短请求，半开/僵尸自然消失，断线感知=下一次 poll 失败。
+
+### 实现
+
+- `cws/src/poll-conn.js`（新）：PollConn 虚拟连接——对桥内全部代码伪装 ws
+  （readyState/OPEN/send/_authed/_client），下行帧进内存队列由 poll 拉走；
+  爆仓/空闲 90s/显式 close 都走 onWsClosed 同款 detach。
+- `bridge.js`：openPollConn/getPollConn/closePollConn + 30s sweep；route 的
+  会话重绑（s.ws = ws）对 PollConn 天然成立——帧收发与 WS 共用一套 route。
+- `server.js`：/p/open（token 换 pid，authCore 验证）、/p/poll（wait≤55s 挂起）、
+  /p/up（帧路由）、/p/close；pid 走 x-cws-poll 头不进日志；WS 路径原样保留。
+- 笔端 `src/rcpoll.js`（新）：RcPollClient 仿真原生 WebSocket 组件接口
+  （setEventCallback/poll/getReadyState/send/close/destroy，事件
+  open/message/error/close 同形）——rccws.js 前台/后台引擎只换构造函数一行，
+  auth/hello/心跳/重连/echo 全部零改动。老服务端 /p/open 404 →
+  onUnsupported 回调记住，本次会话回退 WS。
+- 时序参数：服务端 wait=25s（上限 55）；笔端 fetch timeout=35s（CURLOPT 秒）
+  > wait；up 串行 Promise 链保帧序；新 poll 到来唤醒旧 waiter 接管投递
+  （客户端重试的僵尸请求不吞帧）。
+
+### 验收（隔离服 :18721 + mock-openclaw-gateway，Windows Node 24）
+
+- `scripts/test-poll-transport.mjs` **15/15 PASS**：错 token 401、换 pid、
+  坏 pid 410、auth/hello/ping 全走 poll、openclaw 会话 new_session→
+  session_ready→send→final="2"（263ms 全链路）、空转 wait=2 → 2008ms 空回、
+  有帧即时 2ms、/p/close → 410 → 重开会话仍在、WS 路径回归（URL token+pong）。
+- `scripts/test-rcpoll-client.mjs` **9/9 PASS**（仿真笔端 Fetch：status/ok/_body
+  同形）：open→auth_ok→hello→pong→close 事件序列、readyState 0/1/3、
+  close(1000)/连不上 1006/错 token 4001、404 场景 onUnsupported 触发。
+- 笔端 `npm run build`（aiot-cli -p）通过，产物 8001783700000001.1_6_1.amr
+  （版本号保持 1.6.1 不变）。构建兜底：Node24 移除 process.binding('http_parser')，
+  npshim.cjs 映射 _http_common（NODE_OPTIONS=--require，仅构建期）。
+
+### 未覆盖
+
+- 笔端真机实弹（安装 .amr 后实测连接/对话/断线重连）——待用户装包验证；
+- 90s 空闲回收与爆仓断开两条路径未单测（逻辑直白，靠 sweep 日志观察）。
