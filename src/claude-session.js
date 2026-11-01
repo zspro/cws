@@ -43,7 +43,10 @@ export class ClaudeSession extends BaseSession {
 
   _historyPath() {
     // claude stores per-session history under ~/.claude/projects/<munged-cwd>/<uuid>.jsonl
-    const proj = path.resolve(this.cwd).replace(/\//g, '-').replace(/\./g, '-');
+    // CLI 的转义是「非字母数字一律变 -」（实测 /www/project/杂项 -> -www-project---）。
+    // 只换 / 和 . 的话中文/空格目录找不到记录，误走 --session-id，CLI 报
+    // 「Session ID … already in use」秒退——表现为停止后会话再也起不来
+    const proj = path.resolve(this.cwd).replace(/[^a-zA-Z0-9]/g, '-');
     return path.join(os.homedir(), '.claude', 'projects', proj, this.cli_uuid + '.jsonl');
   }
 
@@ -102,10 +105,16 @@ export class ClaudeSession extends BaseSession {
       this.ready = this._makeReady();
       this.proc = spawnDetached(CLAUDE_BIN, this._buildArgs(), {
         cwd: this.cwd,
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: _procEnv(this.channel),
       });
       this.dying = false;
+      // stderr 留最后 2KB：CLI 启动即退时原因只在这里（以前直接丢弃，
+      // 用户只看到「已中断（process_exited）」无从下手）
+      const errProc = this.proc;
+      errProc._errTail = '';
+      errProc.stderr.on('data', (d) => { errProc._errTail = (errProc._errTail + d).slice(-2048); });
+      errProc.stderr.on('error', () => {});
       // swallow async EPIPE on stdin after process death (Node emits 'error'
       // asynchronously instead of throwing on write)
       this.proc.stdin.on('error', () => {});
@@ -204,13 +213,14 @@ export class ClaudeSession extends BaseSession {
     });
     rl.on('close', async () => {
       const code = proc.exitCode;
-      log('proc_exit', { session_id: this.id, code });
+      const errTail = String(proc._errTail || '').trim().split(/\r?\n/).slice(-3).join(' | ').slice(0, 300);
+      log('proc_exit', { session_id: this.id, code, ...(errTail ? { stderr: errTail } : {}) });
       if (this.turn_active && !this.aborted_sent) {
         this.turn_active = false;
         this._cancelTurnTimer();
         await this.sendWs({
           post_type: 'turn_aborted', session_id: this.id,
-          reason: 'process_exited', echo: this.turn_echo,
+          reason: errTail && code ? 'process_exited: ' + errTail : 'process_exited', echo: this.turn_echo,
         });
       }
       await this._expireAllAsks();
